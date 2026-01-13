@@ -163,6 +163,9 @@ static const unsigned long TP_INT_DEBOUNCE_MS = 200;  // Ignore brief HIGH pulse
 // Protection against short tap after timer start
 unsigned long timerStartTime = 0;
 const unsigned long SHORT_TAP_BLOCK_MS = 1500;  // Block short taps for 1.5s after timer start
+// Display optimization - track what needs redrawing
+static bool displayInitialized = false;
+static char lastTimeStr[6] = "";
 
 // --- Helper: draw golden "R" splash (used as stopped screen) ---
 void drawSplash() {
@@ -216,6 +219,7 @@ void startTimer() {
   startTime = millis();
   timerStartTime = millis();  // Track when timer started for short tap protection
   elapsedBeforePause = 0;
+  displayInitialized = false;  // Force full redraw on timer start
   triggerFlash(COLOR_GOLD);
 }
 
@@ -236,6 +240,7 @@ void resumeTimer() {
 
 void stopTimer() {
   currentState = STOPPED;
+  displayInitialized = false;  // Force full redraw on next display
   displayStoppedState();
 }
 
@@ -491,8 +496,6 @@ void updateDisplay() {
 }
 
 void drawTimer() {
-  gfx->fillScreen(COLOR_BLACK);
-
   unsigned long elapsed = 0;
   if (currentState == RUNNING) {
     elapsed = millis() - startTime;
@@ -511,27 +514,64 @@ void drawTimer() {
   if (progress < 0) progress = 0;
   if (progress > 1) progress = 1;
   
-  // Draw circle first, then time inside it
   int centerX = gfx->width() / 2;
   int centerY = gfx->height() / 2;
-  int radius = 70;  // Bigger circle
+  int radius = 70;
   
-  drawProgressCircle(progress, centerX, centerY, radius);
-  
-  // Draw time inside the circle (moved up a bit)
-  drawCenteredText(timeStr, centerX, centerY - 20, COLOR_GOLD, 3);
-
-  const char *statusTxt = nullptr;
-  uint16_t statusColor = COLOR_GOLD;
-  if (currentState == PAUSED) {
-    statusTxt = "PAUSED";
-  } else if (isWorkSession) {
-    statusTxt = "WORK";
+  // Only redraw everything on first call or if state changed
+  if (!displayInitialized) {
+    gfx->fillScreen(COLOR_BLACK);
+    drawProgressCircle(progress, centerX, centerY, radius);
+    displayInitialized = true;
+    
+    const char *statusTxt = nullptr;
+    uint16_t statusColor = COLOR_GOLD;
+    if (currentState == PAUSED) {
+      statusTxt = "PAUSED";
+    } else if (isWorkSession) {
+      statusTxt = "WORK";
+    } else {
+      statusTxt = "REST";
+      statusColor = COLOR_BLUE;
+    }
+    drawCenteredText(statusTxt, gfx->width() / 2, gfx->height() - 30, statusColor, 2);
   } else {
-    statusTxt = "REST";
-    statusColor = COLOR_BLUE;
+    // Update progress circle (only the progress part, not the border)
+    // For simplicity, redraw the whole circle but only when progress changes significantly
+    static float lastProgress = -1.0f;
+    if (abs(progress - lastProgress) > 0.01f) {  // Update if progress changed by >1%
+      // Erase old progress by redrawing border
+      for (int i = 0; i < 5; i++) {
+        gfx->drawCircle(centerX, centerY, radius - i, COLOR_GOLD);
+      }
+      // Draw new progress
+      if (progress > 0 && progress <= 1.0f) {
+        const int segments = 64;
+        for (int i = 0; i < segments * progress; i++) {
+          float angle = (i * 2.0f * PI) / segments - PI / 2.0f;
+          int x = centerX + radius * cosf(angle);
+          int y = centerY + radius * sinf(angle);
+          gfx->drawPixel(x, y, COLOR_GOLD);
+        }
+      }
+      lastProgress = progress;
+    }
   }
-  drawCenteredText(statusTxt, gfx->width() / 2, gfx->height() - 30, statusColor, 2);  // Bigger text (size 2)
+  
+  // Update time text only if it changed (optimize to avoid flickering)
+  if (strcmp(timeStr, lastTimeStr) != 0) {
+    // Erase old text by drawing it in black color (more efficient than fillRect)
+    if (lastTimeStr[0] != '\0') {
+      // Draw old text in black to erase it
+      drawCenteredText(lastTimeStr, centerX, centerY - 20, COLOR_BLACK, 3);
+    }
+    
+    // Draw new time in gold
+    drawCenteredText(timeStr, centerX, centerY - 20, COLOR_GOLD, 3);
+    strcpy(lastTimeStr, timeStr);
+  }
+  
+  // Status text doesn't change often, so we can leave it as is
 }
 
 void drawProgressCircle(float progress, int centerX, int centerY, int radius) {
