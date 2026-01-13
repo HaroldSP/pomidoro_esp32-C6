@@ -166,6 +166,7 @@ const unsigned long SHORT_TAP_BLOCK_MS = 1500;  // Block short taps for 1.5s aft
 // Display optimization - track what needs redrawing
 static bool displayInitialized = false;
 static char lastTimeStr[6] = "";
+static TimerState lastDisplayedState = STOPPED;  // Track state changes for status update
 
 // --- Helper: draw golden "R" splash (used as stopped screen) ---
 void drawSplash() {
@@ -535,6 +536,7 @@ void drawTimer() {
       statusColor = COLOR_BLUE;
     }
     drawCenteredText(statusTxt, gfx->width() / 2, gfx->height() - 30, statusColor, 2);
+    lastDisplayedState = currentState;  // Initialize state tracking
   } else {
     // Update progress circle (only the progress part, not the border)
     // For simplicity, redraw the whole circle but only when progress changes significantly
@@ -571,7 +573,36 @@ void drawTimer() {
     strcpy(lastTimeStr, timeStr);
   }
   
-  // Status text doesn't change often, so we can leave it as is
+  // Update status text if state changed
+  if (currentState != lastDisplayedState) {
+    // Determine new status text and color
+    const char *statusTxt = nullptr;
+    uint16_t statusColor = COLOR_GOLD;
+    if (currentState == PAUSED) {
+      statusTxt = "PAUSED";
+    } else if (isWorkSession) {
+      statusTxt = "WORK";
+    } else {
+      statusTxt = "REST";
+      statusColor = COLOR_BLUE;
+    }
+    
+    // Erase old status by drawing it in black (if we had one)
+    if (lastDisplayedState != STOPPED) {
+      const char *oldStatusTxt = nullptr;
+      if (lastDisplayedState == PAUSED) {
+        oldStatusTxt = "PAUSED";
+      } else {
+        // Use "WORK" as default for erasing (both WORK and REST are similar length)
+        oldStatusTxt = "WORK";
+      }
+      drawCenteredText(oldStatusTxt, gfx->width() / 2, gfx->height() - 30, COLOR_BLACK, 2);
+    }
+    
+    // Draw new status
+    drawCenteredText(statusTxt, gfx->width() / 2, gfx->height() - 30, statusColor, 2);
+    lastDisplayedState = currentState;
+  }
 }
 
 void drawProgressCircle(float progress, int centerX, int centerY, int radius) {
