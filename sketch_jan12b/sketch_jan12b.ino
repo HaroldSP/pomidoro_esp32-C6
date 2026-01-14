@@ -157,6 +157,8 @@ static const int TP_INT = 21;
 
 TimerState currentState = STOPPED;
 PomodoroMode currentMode = MODE_25_5;  // Default to standard 25/5 mode
+// View mode: false = normal view, true = grid view
+bool gridViewActive = false;
 unsigned long startTime = 0;
 unsigned long pausedTime = 0;
 unsigned long elapsedBeforePause = 0;
@@ -200,6 +202,30 @@ static int16_t modeBtnBottom = 0;
 static bool modeBtnValid = false;
 static PomodoroMode lastDisplayedMode = MODE_25_5;  // Track mode changes
 
+// Home screen button bounds (for work/rest buttons on splash screen)
+static int16_t workBtnLeft = 0;
+static int16_t workBtnRight = 0;
+static int16_t workBtnTop = 0;
+static int16_t workBtnBottom = 0;
+static bool workBtnValid = false;
+static int16_t restBtnLeft = 0;
+static int16_t restBtnRight = 0;
+static int16_t restBtnTop = 0;
+static int16_t restBtnBottom = 0;
+static bool restBtnValid = false;
+
+// Grid view button bounds (for X and ✓ buttons in bottom row)
+static int16_t gridCancelBtnLeft = 0;
+static int16_t gridCancelBtnRight = 0;
+static int16_t gridCancelBtnTop = 0;
+static int16_t gridCancelBtnBottom = 0;
+static bool gridCancelBtnValid = false;
+static int16_t gridConfirmBtnLeft = 0;
+static int16_t gridConfirmBtnRight = 0;
+static int16_t gridConfirmBtnTop = 0;
+static int16_t gridConfirmBtnBottom = 0;
+static bool gridConfirmBtnValid = false;
+
 // Last known touch position (for button hit-test & indicator)
 static int16_t lastTouchX = 0;
 static int16_t lastTouchY = 0;
@@ -234,6 +260,181 @@ void drawSplash() {
   gfx->setTextSize(2, 2, 0);
   gfx->setCursor(centerX - 33, centerY + 30);
   gfx->print("R");
+  
+  // Draw "work" button at the top
+  const char *workTxt = "work";
+  int16_t workCenterX = gfx->width() / 2;
+  int16_t topMargin = 24;  // Same margin as mode button
+  
+  int16_t x1, y1;
+  uint16_t w, h;
+  gfx->setFont(nullptr);
+  gfx->setTextSize(3, 3, 0);
+  gfx->getTextBounds(workTxt, 0, 0, &x1, &y1, &w, &h);
+  
+  int padding = 4;
+  int16_t workY = topMargin + (int16_t)h + padding;
+  workBtnLeft   = workCenterX - (int16_t)w / 2 - padding;
+  workBtnRight  = workCenterX + (int16_t)w / 2 + padding;
+  workBtnTop    = topMargin;
+  workBtnBottom = workY + padding;
+  
+  // Draw border around work button (gold color - same as work UI)
+  gfx->drawRect(workBtnLeft, workBtnTop,
+                workBtnRight - workBtnLeft,
+                workBtnBottom - workBtnTop,
+                COLOR_GOLD);
+  
+  // Draw work text centered inside the button
+  int16_t workBtnCenterY = (workBtnTop + workBtnBottom) / 2;
+  drawCenteredText(workTxt, workCenterX, workBtnCenterY, COLOR_GOLD, 3);
+  workBtnValid = true;
+  
+  // Draw "rest" button at the bottom
+  const char *restTxt = "rest";
+  int16_t restCenterX = gfx->width() / 2;
+  int16_t restY = gfx->height() - 30;  // Same position as status button
+  
+  gfx->getTextBounds(restTxt, 0, 0, &x1, &y1, &w, &h);
+  
+  padding = 6;
+  restBtnLeft   = restCenterX - (int16_t)w / 2 - padding;
+  restBtnRight  = restCenterX + (int16_t)w / 2 + padding;
+  restBtnTop    = restY - (int16_t)h - padding;
+  restBtnBottom = restY + padding;
+  
+  // Draw border around rest button (blue color - same as rest UI)
+  gfx->drawRect(restBtnLeft, restBtnTop,
+                restBtnRight - restBtnLeft,
+                restBtnBottom - restBtnTop,
+                COLOR_BLUE);
+  
+  // Draw rest text centered inside the button
+  int16_t restBtnCenterY = (restBtnTop + restBtnBottom) / 2;
+  drawCenteredText(restTxt, restCenterX, restBtnCenterY, COLOR_BLUE, 3);
+  restBtnValid = true;
+}
+
+// --- Helper: draw grid view (3 columns, X rows with square cells) ---
+void drawGrid() {
+  gfx->fillScreen(COLOR_BLACK);
+  
+  int16_t screenWidth = gfx->width();   // 172
+  int16_t screenHeight = gfx->height(); // 320
+  
+  // 3 columns, cells twice smaller than before (was 86px, now 43px)
+  // Previous: 172/2 = 86px per cell, now: 86/2 = 43px per cell
+  int16_t cellWidth = 43;  // Twice smaller than before (was 86px)
+  int16_t cellHeight = cellWidth;  // Square cells: 43x43 pixels
+  
+  // Calculate number of rows that fit on screen
+  int16_t numRows = screenHeight / cellHeight;  // 320 / 43 = 7 rows
+  
+  // Calculate total grid width (3 columns * 43px = 129px)
+  int16_t gridWidth = 3 * cellWidth;
+  // Center the grid horizontally
+  int16_t gridStartX = (screenWidth - gridWidth) / 2;
+  
+  // Draw grid lines (golden color)
+  uint16_t gridColor = COLOR_GOLD;
+  
+  // Calculate last row Y position
+  int16_t lastRowY = (numRows - 1) * cellHeight;
+  
+  // Draw vertical lines (column separators) - skip outer borders
+  // Draw only inner vertical lines (between columns 1-2 and 2-3)
+  // BUT: don't draw them in the last row (bottom row is merged)
+  for (int col = 1; col < 3; col++) {
+    int16_t x = gridStartX + col * cellWidth;
+    // Draw line from top to just before last row
+    gfx->drawFastVLine(x, 0, lastRowY, gridColor);
+  }
+  
+  // Draw horizontal lines (row separators) - skip outer borders
+  // Draw only inner horizontal lines (between rows, but not the last one)
+  for (int row = 1; row < numRows - 1; row++) {
+    int16_t y = row * cellHeight;
+    if (y < screenHeight) {
+      gfx->drawFastHLine(gridStartX, y, gridWidth, gridColor);
+    }
+  }
+  
+  // Draw bottom row as merged (no vertical lines in it)
+  // Draw bottom border line
+  gfx->drawFastHLine(gridStartX, lastRowY, gridWidth, gridColor);
+  
+  // Draw buttons in bottom row: "X" on left, "V" (checkmark) on right, centered
+  int16_t bottomRowY = lastRowY;
+  int16_t bottomRowHeight = cellHeight;
+  int16_t bottomRowCenterY = bottomRowY + bottomRowHeight / 2 + 15;
+  
+  // Calculate button size - try size 5 or 6 for bigger buttons
+  const char *cancelTxt = "X";
+  const char *confirmTxt = "V";  // Use "V" instead of "✓" for better compatibility
+  
+  int16_t x1, y1;
+  uint16_t w1, h1, w2, h2;
+  gfx->setFont(nullptr);
+  uint8_t textSize = 5;  // Try size 5 for bigger buttons (can be 6 if needed)
+  gfx->setTextSize(textSize, textSize, 0);
+  
+  // Get bounds for both texts to ensure same button size
+  gfx->getTextBounds(cancelTxt, 0, 0, &x1, &y1, &w1, &h1);
+  gfx->getTextBounds(confirmTxt, 0, 0, &x1, &y1, &w2, &h2);
+  
+  // Use maximum width and height for both buttons to make them same size
+  uint16_t maxW = (w1 > w2) ? w1 : w2;
+  uint16_t maxH = (h1 > h2) ? h1 : h2;
+  
+  // Calculate button size with padding
+  int padding = 6;
+  int16_t btnWidth = maxW + padding * 2;
+  int16_t btnHeight = maxH + padding * 2;
+  
+  // Allow buttons to be larger - remove size restriction
+  // Buttons can extend beyond row height if needed
+  
+  // Center buttons in the bottom row with space between them
+  int16_t spaceBetween = 20;  // Space between buttons
+  int16_t totalButtonsWidth = btnWidth * 2 + spaceBetween;
+  int16_t buttonsStartX = gridStartX + (gridWidth - totalButtonsWidth) / 2;
+  
+  // Left button "X"
+  int16_t cancelCenterX = buttonsStartX + btnWidth / 2;
+  gridCancelBtnLeft   = buttonsStartX;
+  gridCancelBtnRight  = buttonsStartX + btnWidth;
+  gridCancelBtnTop    = bottomRowCenterY - btnHeight / 2;
+  gridCancelBtnBottom = bottomRowCenterY + btnHeight / 2;
+  
+  // Draw border around cancel button
+  gfx->drawRect(gridCancelBtnLeft, gridCancelBtnTop,
+                btnWidth,
+                btnHeight,
+                gridColor);
+  
+  // Draw "X" text centered with slight offset (right and down) for better visual centering
+  int16_t textOffsetX = 2;  // Move right a bit
+  int16_t textOffsetY = 2;  // Move down a bit
+  drawCenteredText(cancelTxt, cancelCenterX + textOffsetX, bottomRowCenterY + textOffsetY, gridColor, textSize);
+  gridCancelBtnValid = true;
+  
+  // Right button "V" (checkmark)
+  int16_t confirmStartX = buttonsStartX + btnWidth + spaceBetween;
+  int16_t confirmCenterX = confirmStartX + btnWidth / 2;
+  gridConfirmBtnLeft   = confirmStartX;
+  gridConfirmBtnRight  = confirmStartX + btnWidth;
+  gridConfirmBtnTop    = bottomRowCenterY - btnHeight / 2;
+  gridConfirmBtnBottom = bottomRowCenterY + btnHeight / 2;
+  
+  // Draw border around confirm button
+  gfx->drawRect(gridConfirmBtnLeft, gridConfirmBtnTop,
+                btnWidth,
+                btnHeight,
+                gridColor);
+  
+  // Draw "V" text centered with slight offset (right and down) for better visual centering
+  drawCenteredText(confirmTxt, confirmCenterX + textOffsetX, bottomRowCenterY + textOffsetY, gridColor, textSize);
+  gridConfirmBtnValid = true;
 }
 
 // --- Helper: centered text using getTextBounds ---
@@ -498,6 +699,42 @@ void handleTouchInput() {
         tapIndicatorStart = millis();
       }
 
+      // Check for grid view buttons (X and ✓) when grid is active
+      bool inGridCancelButton = false;
+      bool inGridConfirmButton = false;
+      if (gridViewActive && lastTouchValid && tx >= 0 && ty >= 0) {
+        if (gridCancelBtnValid) {
+          if (tx >= gridCancelBtnLeft && tx <= gridCancelBtnRight &&
+              ty >= gridCancelBtnTop  && ty <= gridCancelBtnBottom) {
+            inGridCancelButton = true;
+          }
+        }
+        if (gridConfirmBtnValid) {
+          if (tx >= gridConfirmBtnLeft && tx <= gridConfirmBtnRight &&
+              ty >= gridConfirmBtnTop  && ty <= gridConfirmBtnBottom) {
+            inGridConfirmButton = true;
+          }
+        }
+      }
+
+      // Check for home screen buttons (work/rest) when stopped
+      bool inWorkButton = false;
+      bool inRestButton = false;
+      if (currentState == STOPPED && !gridViewActive && lastTouchValid && tx >= 0 && ty >= 0) {
+        if (workBtnValid) {
+          if (tx >= workBtnLeft && tx <= workBtnRight &&
+              ty >= workBtnTop  && ty <= workBtnBottom) {
+            inWorkButton = true;
+          }
+        }
+        if (restBtnValid) {
+          if (tx >= restBtnLeft && tx <= restBtnRight &&
+              ty >= restBtnTop  && ty <= restBtnBottom) {
+            inRestButton = true;
+          }
+        }
+      }
+
       // Check for mode button click first
       bool inModeButton = false;
       if (modeBtnValid && lastTouchValid && tx >= 0 && ty >= 0) {
@@ -530,7 +767,25 @@ void handleTouchInput() {
         }
       }
 
-      if (inModeButton) {
+      if (inGridCancelButton) {
+        // X button clicked in grid view - return to home screen
+        Serial.println("*** GRID CANCEL (X) BUTTON CLICKED ***");
+        gridViewActive = false;
+        displayStoppedState();  // Return to home screen
+      } else if (inGridConfirmButton) {
+        // ✓ button clicked in grid view
+        Serial.println("*** GRID CONFIRM (✓) BUTTON CLICKED ***");
+        // TODO: Add functionality later
+      } else if (inWorkButton) {
+        // Work button clicked on home screen - show grid view
+        Serial.println("*** WORK BUTTON CLICKED ***");
+        gridViewActive = true;
+        drawGrid();
+      } else if (inRestButton) {
+        // Rest button clicked on home screen
+        Serial.println("*** REST BUTTON CLICKED ***");
+        // TODO: Add functionality later
+      } else if (inModeButton) {
         // Cycle through modes: 1/1 -> 25/5 -> 50/10 -> 1/1
         Serial.println("*** MODE BUTTON CLICKED ***");
         PomodoroMode oldMode = currentMode;
@@ -631,6 +886,13 @@ void handleTouchInput() {
 
 void updateDisplay() {
   if (currentState == STOPPED) {
+    // If grid view is active, show grid (it's already drawn when activated)
+    // Otherwise, show normal stopped state (splash screen)
+    if (!gridViewActive) {
+      // Normal stopped state is handled by displayStoppedState()
+      return;
+    }
+    // Grid view is active, no need to update (grid is static for now)
     return;
   } else {
     // Update display exactly once per second for smooth timer
