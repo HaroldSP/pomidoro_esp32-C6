@@ -248,7 +248,9 @@ const uint16_t paletteColors[] = {
   COLOR_PURPLE,      // 14 - Purple
   COLOR_MAGENTA,     // 15 - Magenta
   COLOR_GOLD,        // 16 - Golden
-  COLOR_COFFEE       // 17 - Coffee/Brown
+  COLOR_COFFEE,      // 17 - Coffee/Brown
+  COLOR_WHITE,       // 18 - White (added for 5x4 grid)
+  0x0400             // 19 - Dark green (RGB565: 0x0400)
 };
 const int paletteSize = sizeof(paletteColors) / sizeof(paletteColors[0]);
 
@@ -300,8 +302,11 @@ uint8_t currentViewMode = 0;
 bool gridViewActive = false;  // Kept for backward compatibility
 // Selected color for work session (user-customizable)
 uint16_t selectedWorkColor = COLOR_GOLD;  // Default work color
+uint16_t selectedRestColor = 0;           // Selected color for rest (0 = use inverted work color)
 uint16_t tempPreviewColor = COLOR_GOLD;   // Temporary color for preview
+uint16_t tempPreviewRestColor = 0;        // Temporary rest color for preview (0 = use inverted)
 int8_t tempSelectedColorIndex = -1;       // Temporary selection in grid (-1 = none)
+bool selectingRestColor = false;           // Flag: true when selecting rest color, false when selecting work color
 // Grid parameters (needed for touch detection)
 static int16_t gridCellWidth = 43;
 static int16_t gridCellHeight = 43;
@@ -386,6 +391,12 @@ static int16_t previewConfirmBtnRight = 0;
 static int16_t previewConfirmBtnTop = 0;
 static int16_t previewConfirmBtnBottom = 0;
 static bool previewConfirmBtnValid = false;
+// Rest color swatch bounds (clickable area for selecting rest color)
+static int16_t previewRestSwatchLeft = 0;
+static int16_t previewRestSwatchRight = 0;
+static int16_t previewRestSwatchTop = 0;
+static int16_t previewRestSwatchBottom = 0;
+static bool previewRestSwatchValid = false;
 
 // Gear button bounds (settings button on home screen)
 static int16_t gearBtnLeft = 0;
@@ -398,6 +409,10 @@ static bool gearBtnValid = false;
 static int16_t lastTouchX = 0;
 static int16_t lastTouchY = 0;
 static bool lastTouchValid = false;
+
+// Last selected grid cell (for partial redraw to prevent flickering)
+static int16_t lastSelectedGridRow = -1;
+static int16_t lastSelectedGridCol = -1;
 
 // Tap indicator (small green circle) to show taps
 static bool tapIndicatorActive = false;
@@ -423,18 +438,32 @@ extern bool forceCircleRedraw;  // Force progress circle redraw
 void saveSelectedColor() {
   preferences.begin("pomodoro", false);  // Open namespace in RW mode
   preferences.putUShort("workColor", selectedWorkColor);
+  preferences.putUShort("restColor", selectedRestColor);  // Save rest color (0 = use inverted)
   preferences.end();
-  Serial.print("Saved color to NVS: 0x");
+  Serial.print("Saved work color to NVS: 0x");
   Serial.println(selectedWorkColor, HEX);
+  if (selectedRestColor != 0) {
+    Serial.print("Saved rest color to NVS: 0x");
+    Serial.println(selectedRestColor, HEX);
+  } else {
+    Serial.println("Rest color: using inverted work color");
+  }
 }
 
 // Load selected color from NVS (persistent storage)
 void loadSelectedColor() {
   preferences.begin("pomodoro", true);  // Open namespace in read-only mode
   selectedWorkColor = preferences.getUShort("workColor", COLOR_GOLD);  // Default to gold
+  selectedRestColor = preferences.getUShort("restColor", 0);  // Default to 0 (use inverted work color)
   preferences.end();
-  Serial.print("Loaded color from NVS: 0x");
+  Serial.print("Loaded work color from NVS: 0x");
   Serial.println(selectedWorkColor, HEX);
+  if (selectedRestColor != 0) {
+    Serial.print("Loaded rest color from NVS: 0x");
+    Serial.println(selectedRestColor, HEX);
+  } else {
+    Serial.println("Rest color: using inverted work color");
+  }
 }
 
 // ==================== WiFi & Telegram Functions ====================
@@ -729,33 +758,103 @@ void drawSplash() {
   restBtnValid = false;
 }
 
+// Helper function to redraw a single grid cell (for partial updates to prevent flickering)
+void redrawGridCell(int row, int col, bool isSelected) {
+  if (row < 0 || col < 0 || row >= gridNumRows || col >= gridNumCols) return;
+  
+  int colorIndex = row * gridNumCols + col;
+  if (colorIndex >= paletteSize) return;
+  
+  int16_t cellX = gridStartX + col * gridCellWidth;
+  int16_t cellY = row * gridCellHeight;
+  uint16_t cellColor = paletteColors[colorIndex];
+  
+  // Fill the cell with color
+  gfx->fillRect(cellX, cellY, gridCellWidth, gridCellHeight, cellColor);
+  
+  // Draw grid lines around the cell
+  bool isLandscape = (currentRotation == 1 || currentRotation == 3);
+  uint16_t gridColor = COLOR_BLACK;
+  
+  // Draw right border (if not last column)
+  if (col < gridNumCols - 1) {
+    gfx->drawFastVLine(cellX + gridCellWidth, cellY, gridCellHeight, gridColor);
+  }
+  
+  // Draw bottom border (if not last row or if landscape)
+  if (isLandscape || row < gridNumRows - 2) {
+    gfx->drawFastHLine(cellX, cellY + gridCellHeight, gridCellWidth, gridColor);
+  }
+  
+  // Highlight selected cell with white border
+  if (isSelected) {
+    // Draw thick white border (4 pixels inside)
+    for (int i = 0; i < 4; i++) {
+      gfx->drawRect(cellX + i, cellY + i, 
+                    gridCellWidth - i * 2, gridCellHeight - i * 2, 
+                    COLOR_WHITE);
+    }
+  }
+}
+
 // --- Helper: draw grid view (3 columns, X rows with square cells) ---
 void drawGrid() {
   gfx->fillScreen(COLOR_BLACK);
   
-  int16_t screenWidth = gfx->width();   // 172
-  int16_t screenHeight = gfx->height(); // 320
+  // Reset last selected cell when redrawing entire grid
+  lastSelectedGridRow = -1;
+  lastSelectedGridCol = -1;
+  
+  // Check if we're in landscape mode
+  bool isLandscape = (currentRotation == 1 || currentRotation == 3);
+  
+  int16_t screenWidth = gfx->width();
+  int16_t screenHeight = gfx->height();
   
   // Save grid parameters to global variables for touch detection
+  // Use fixed cell size (43x43px) for both portrait and landscape modes
   gridCellWidth = 43;
   gridCellHeight = 43;
-  gridNumCols = 3;
-  gridNumRows = screenHeight / gridCellHeight;  // 320 / 43 = 7 rows
   
-  // Calculate total grid width (3 columns * 43px = 129px)
+  if (isLandscape) {
+    // Landscape: 5 columns, 4 rows
+    gridNumCols = 5;
+    gridNumRows = 4;
+  } else {
+    // Portrait: 3 columns, X rows
+    gridNumCols = 3;
+    gridNumRows = screenHeight / gridCellHeight;
+  }
+  
+  // Calculate total grid width
   int16_t gridWidth = gridNumCols * gridCellWidth;
   // Center the grid horizontally and save to global
-  gridStartX = (screenWidth - gridWidth) / 2;
+  // In landscape mode, shift grid a bit to the left
+  if (isLandscape) {
+    gridStartX = (screenWidth - gridWidth) / 2 - 10;  // Shift 10px to the left
+  } else {
+    gridStartX = (screenWidth - gridWidth) / 2;  // Centered in portrait
+  }
   
   // Grid lines color (black)
   uint16_t gridColor = COLOR_BLACK;
   
-  // Calculate last row Y position (last row is for buttons, skip it)
-  int16_t lastRowY = (gridNumRows - 1) * gridCellHeight;
+  // Calculate last row Y position
+  // In portrait mode, last row is for buttons, so skip it
+  // In landscape mode, all rows are for colors, buttons are on the right
+  int16_t lastRowY;
+  int rowsForColors;
+  if (isLandscape) {
+    lastRowY = gridNumRows * gridCellHeight;
+    rowsForColors = gridNumRows;  // All rows for colors
+  } else {
+    lastRowY = (gridNumRows - 1) * gridCellHeight;
+    rowsForColors = gridNumRows - 1;  // Last row is for buttons
+  }
   
   // Fill grid cells with palette colors and highlight selected
   int colorIndex = 0;
-  for (int row = 0; row < gridNumRows - 1; row++) {
+  for (int row = 0; row < rowsForColors; row++) {
     for (int col = 0; col < gridNumCols; col++) {
       int16_t cellX = gridStartX + col * gridCellWidth;
       int16_t cellY = row * gridCellHeight;
@@ -791,20 +890,27 @@ void drawGrid() {
   }
   
   // Draw horizontal lines (row separators)
-  for (int row = 1; row < gridNumRows - 1; row++) {
-    int16_t y = row * gridCellHeight;
-    if (y < screenHeight) {
-      gfx->drawFastHLine(gridStartX, y, gridWidth, gridColor);
+  if (isLandscape) {
+    // Landscape: draw lines between all rows
+    for (int row = 1; row < gridNumRows; row++) {
+      int16_t y = row * gridCellHeight;
+      if (y < screenHeight) {
+        gfx->drawFastHLine(gridStartX, y, gridWidth, gridColor);
+      }
     }
+    // Draw bottom border
+    gfx->drawFastHLine(gridStartX, lastRowY, gridWidth, gridColor);
+  } else {
+    // Portrait: draw lines between rows (but not last one, which is for buttons)
+    for (int row = 1; row < gridNumRows - 1; row++) {
+      int16_t y = row * gridCellHeight;
+      if (y < screenHeight) {
+        gfx->drawFastHLine(gridStartX, y, gridWidth, gridColor);
+      }
+    }
+    // Draw bottom border line
+    gfx->drawFastHLine(gridStartX, lastRowY, gridWidth, gridColor);
   }
-  
-  // Draw bottom border line
-  gfx->drawFastHLine(gridStartX, lastRowY, gridWidth, gridColor);
-  
-  // Draw buttons in bottom row: "X" on left, "V" (checkmark) on right, centered
-  int16_t bottomRowY = lastRowY;
-  int16_t bottomRowHeight = gridCellHeight;
-  int16_t bottomRowCenterY = bottomRowY + bottomRowHeight / 2 + 15;
   
   // Calculate button size - try size 5 or 6 for bigger buttons
   const char *cancelTxt = "X";
@@ -829,50 +935,95 @@ void drawGrid() {
   int16_t btnWidth = maxW + padding * 2;
   int16_t btnHeight = maxH + padding * 2;
   
-  // Allow buttons to be larger - remove size restriction
-  // Buttons can extend beyond row height if needed
-  
-  // Center buttons in the bottom row with space between them
-  int16_t spaceBetween = 20;  // Space between buttons
-  int16_t totalButtonsWidth = btnWidth * 2 + spaceBetween;
-  int16_t buttonsStartX = gridStartX + (gridWidth - totalButtonsWidth) / 2;
-  
-  // Left button "X"
-  int16_t cancelCenterX = buttonsStartX + btnWidth / 2;
-  gridCancelBtnLeft   = buttonsStartX;
-  gridCancelBtnRight  = buttonsStartX + btnWidth;
-  gridCancelBtnTop    = bottomRowCenterY - btnHeight / 2;
-  gridCancelBtnBottom = bottomRowCenterY + btnHeight / 2;
-  
-  // Draw border around cancel button (golden color)
-  gfx->drawRect(gridCancelBtnLeft, gridCancelBtnTop,
-                btnWidth,
-                btnHeight,
-                COLOR_GOLD);
-  
-  // Draw "X" text centered with slight offset (right and down) for better visual centering
   int16_t textOffsetX = 2;  // Move right a bit
   int16_t textOffsetY = 2;  // Move down a bit
-  drawCenteredText(cancelTxt, cancelCenterX + textOffsetX, bottomRowCenterY + textOffsetY, COLOR_GOLD, textSize);
-  gridCancelBtnValid = true;
   
-  // Right button "V" (checkmark)
-  int16_t confirmStartX = buttonsStartX + btnWidth + spaceBetween;
-  int16_t confirmCenterX = confirmStartX + btnWidth / 2;
-  gridConfirmBtnLeft   = confirmStartX;
-  gridConfirmBtnRight  = confirmStartX + btnWidth;
-  gridConfirmBtnTop    = bottomRowCenterY - btnHeight / 2;
-  gridConfirmBtnBottom = bottomRowCenterY + btnHeight / 2;
-  
-  // Draw border around confirm button (golden color)
-  gfx->drawRect(gridConfirmBtnLeft, gridConfirmBtnTop,
-                btnWidth,
-                btnHeight,
-                COLOR_GOLD);
-  
-  // Draw "V" text centered with slight offset (right and down) for better visual centering
-  drawCenteredText(confirmTxt, confirmCenterX + textOffsetX, bottomRowCenterY + textOffsetY, COLOR_GOLD, textSize);
-  gridConfirmBtnValid = true;
+  if (isLandscape) {
+    // Landscape: buttons on right side, 1 column, 2 rows, V on top, X below
+    // Place buttons in the right empty space (moved right a bit)
+    int16_t btnX = screenWidth - 23;  // Right side with smaller margin (moved right)
+    int16_t btnSpacing = 20;  // Space between V and X buttons vertically
+    int16_t centerY = screenHeight / 2;
+    
+    // Confirm button (V) on top
+    int16_t confirmCenterY = centerY - btnSpacing / 2 - btnHeight / 2;
+    gridConfirmBtnLeft   = btnX - btnWidth / 2;
+    gridConfirmBtnRight  = btnX + btnWidth / 2;
+    gridConfirmBtnTop    = confirmCenterY - btnHeight / 2;
+    gridConfirmBtnBottom = confirmCenterY + btnHeight / 2;
+    
+    // Draw border around confirm button (golden color)
+    gfx->drawRect(gridConfirmBtnLeft, gridConfirmBtnTop,
+                  btnWidth,
+                  btnHeight,
+                  COLOR_GOLD);
+    
+    // Draw "V" text centered
+    drawCenteredText(confirmTxt, btnX + textOffsetX, confirmCenterY + textOffsetY, COLOR_GOLD, textSize);
+    gridConfirmBtnValid = true;
+    
+    // Cancel button (X) below
+    int16_t cancelCenterY = centerY + btnSpacing / 2 + btnHeight / 2;
+    gridCancelBtnLeft   = btnX - btnWidth / 2;
+    gridCancelBtnRight  = btnX + btnWidth / 2;
+    gridCancelBtnTop    = cancelCenterY - btnHeight / 2;
+    gridCancelBtnBottom = cancelCenterY + btnHeight / 2;
+    
+    // Draw border around cancel button (golden color)
+    gfx->drawRect(gridCancelBtnLeft, gridCancelBtnTop,
+                  btnWidth,
+                  btnHeight,
+                  COLOR_GOLD);
+    
+    // Draw "X" text centered
+    drawCenteredText(cancelTxt, btnX + textOffsetX, cancelCenterY + textOffsetY, COLOR_GOLD, textSize);
+    gridCancelBtnValid = true;
+  } else {
+    // Portrait: buttons in bottom row, X on left, V on right, centered
+    int16_t bottomRowY = lastRowY;
+    int16_t bottomRowHeight = gridCellHeight;
+    int16_t bottomRowCenterY = bottomRowY + bottomRowHeight / 2 + 15;
+    
+    // Center buttons in the bottom row with space between them
+    int16_t spaceBetween = 20;  // Space between buttons
+    int16_t totalButtonsWidth = btnWidth * 2 + spaceBetween;
+    int16_t buttonsStartX = gridStartX + (gridWidth - totalButtonsWidth) / 2;
+    
+    // Left button "X"
+    int16_t cancelCenterX = buttonsStartX + btnWidth / 2;
+    gridCancelBtnLeft   = buttonsStartX;
+    gridCancelBtnRight  = buttonsStartX + btnWidth;
+    gridCancelBtnTop    = bottomRowCenterY - btnHeight / 2;
+    gridCancelBtnBottom = bottomRowCenterY + btnHeight / 2;
+    
+    // Draw border around cancel button (golden color)
+    gfx->drawRect(gridCancelBtnLeft, gridCancelBtnTop,
+                  btnWidth,
+                  btnHeight,
+                  COLOR_GOLD);
+    
+    // Draw "X" text centered
+    drawCenteredText(cancelTxt, cancelCenterX + textOffsetX, bottomRowCenterY + textOffsetY, COLOR_GOLD, textSize);
+    gridCancelBtnValid = true;
+    
+    // Right button "V" (checkmark)
+    int16_t confirmStartX = buttonsStartX + btnWidth + spaceBetween;
+    int16_t confirmCenterX = confirmStartX + btnWidth / 2;
+    gridConfirmBtnLeft   = confirmStartX;
+    gridConfirmBtnRight  = confirmStartX + btnWidth;
+    gridConfirmBtnTop    = bottomRowCenterY - btnHeight / 2;
+    gridConfirmBtnBottom = bottomRowCenterY + btnHeight / 2;
+    
+    // Draw border around confirm button (golden color)
+    gfx->drawRect(gridConfirmBtnLeft, gridConfirmBtnTop,
+                  btnWidth,
+                  btnHeight,
+                  COLOR_GOLD);
+    
+    // Draw "V" text centered
+    drawCenteredText(confirmTxt, confirmCenterX + textOffsetX, bottomRowCenterY + textOffsetY, COLOR_GOLD, textSize);
+    gridConfirmBtnValid = true;
+  }
 }
 
 // --- Helper: centered text using getTextBounds ---
@@ -917,40 +1068,71 @@ void drawPauseIcon(int16_t cx, int16_t cy, int16_t size, uint16_t color) {
   gfx->fillRect(cx + gap, cy - barHeight/2, barWidth, barHeight, color);
 }
 
-// --- Helper: draw gear icon (settings) ---
+// --- Helper: draw gear icon (settings) - Material Design Icons cog style ---
 void drawGearIcon(int16_t cx, int16_t cy, int16_t size, uint16_t color) {
-  // Draw a simple gear: outer circle with teeth + inner circle
-  int16_t outerRadius = size / 2;
-  int16_t innerRadius = size / 4;
+  // Material Design Icons cog: outer circle with evenly spaced teeth + inner circle with hole
+  // Fill space between circles
+  int16_t outerRadius = size / 2 - 1;
+  int16_t innerRadius = size / 3;
   int16_t toothLength = size / 6;
-  int numTeeth = 8;
+  int16_t toothWidth = size / 10;  // Fixed width for all teeth
+  int numTeeth = 8;  // Standard 8 teeth for MDI cog
   
-  // Draw outer ring
-  for (int16_t i = 0; i < 3; i++) {
-    gfx->drawCircle(cx, cy, outerRadius - i, color);
+  // Fill the space between outer and inner circles (gear body)
+  for (int16_t r = innerRadius + 1; r < outerRadius; r++) {
+    gfx->drawCircle(cx, cy, r, color);
+  }
+  
+  // Draw outer circle
+  gfx->drawCircle(cx, cy, outerRadius, color);
+  
+  // Draw teeth (rectangular, evenly spaced, all equal size)
+  // Use pixel-by-pixel filling to ensure all teeth are exactly the same thickness
+  for (int i = 0; i < numTeeth; i++) {
+    float angle = (i * 2.0f * PI) / numTeeth;
+    float cosA = cosf(angle);
+    float sinA = sinf(angle);
+    
+    // Tooth extends from outerRadius to outerRadius + toothLength
+    // Calculate perpendicular direction for tooth width
+    float perpAngle = angle + PI / 2;
+    float perpCos = cosf(perpAngle);
+    float perpSin = sinf(perpAngle);
+    
+    // Calculate tooth center line points
+    float baseCenterX = cx + outerRadius * cosA;
+    float baseCenterY = cy + outerRadius * sinA;
+    float tipCenterX = cx + (outerRadius + toothLength) * cosA;
+    float tipCenterY = cy + (outerRadius + toothLength) * sinA;
+    
+    // Calculate perpendicular offset (half width)
+    float halfWidth = toothWidth / 2.0f;
+    
+    // Fill tooth pixel by pixel along its length to ensure consistent thickness
+    int steps = (int)(toothLength * 2);  // More steps for smoother filling
+    for (int step = 0; step <= steps; step++) {
+      float t = (float)step / steps;
+      float centerX = baseCenterX + t * (tipCenterX - baseCenterX);
+      float centerY = baseCenterY + t * (tipCenterY - baseCenterY);
+      
+      // Draw a line perpendicular to the tooth direction at this point
+      int16_t x1 = (int16_t)(centerX + halfWidth * perpCos);
+      int16_t y1 = (int16_t)(centerY + halfWidth * perpSin);
+      int16_t x2 = (int16_t)(centerX - halfWidth * perpCos);
+      int16_t y2 = (int16_t)(centerY - halfWidth * perpSin);
+      
+      // Draw line to fill the tooth width at this point
+      gfx->drawLine(x1, y1, x2, y2, color);
+    }
   }
   
   // Draw inner circle (hollow center)
-  gfx->fillCircle(cx, cy, innerRadius + 2, COLOR_BLACK);
-  for (int16_t i = 0; i < 2; i++) {
-    gfx->drawCircle(cx, cy, innerRadius - i, color);
-  }
+  gfx->fillCircle(cx, cy, innerRadius, COLOR_BLACK);
+  gfx->drawCircle(cx, cy, innerRadius, color);
   
-  // Draw teeth around the gear
-  for (int i = 0; i < numTeeth; i++) {
-    float angle = (i * 2.0f * PI) / numTeeth;
-    int16_t x1 = cx + (outerRadius - 2) * cosf(angle);
-    int16_t y1 = cy + (outerRadius - 2) * sinf(angle);
-    int16_t x2 = cx + (outerRadius + toothLength) * cosf(angle);
-    int16_t y2 = cy + (outerRadius + toothLength) * sinf(angle);
-    // Draw thick tooth (3 lines)
-    for (int t = -1; t <= 1; t++) {
-      float perpAngle = angle + PI / 2;
-      int16_t offsetX = t * cosf(perpAngle);
-      int16_t offsetY = t * sinf(perpAngle);
-      gfx->drawLine(x1 + offsetX, y1 + offsetY, x2 + offsetX, y2 + offsetY, color);
-    }
-  }
+  // Draw center hole (smaller circle inside)
+  int16_t holeRadius = innerRadius / 2;
+  gfx->fillCircle(cx, cy, holeRadius, COLOR_BLACK);
 }
 
 // --- Helper: draw color preview screen ---
@@ -958,57 +1140,122 @@ void drawColorPreview() {
   gfx->fillScreen(COLOR_BLACK);
   
   uint16_t workColor = tempPreviewColor;
-  uint16_t restColor = invertColor(tempPreviewColor);
+  // Use tempPreviewRestColor if set, otherwise use inverted work color
+  uint16_t restColor = (tempPreviewRestColor != 0) ? tempPreviewRestColor : invertColor(tempPreviewColor);
+  
+  // Check if we're in landscape mode
+  bool isLandscape = (currentRotation == 1 || currentRotation == 3);
   
   int16_t centerX = gfx->width() / 2;
   int16_t centerY = gfx->height() / 2;
   
-  // Draw "WORK" label and color swatch at top
-  int16_t workY = centerY - 60;
-  drawCenteredText("WORK", centerX, workY - 30, workColor, 2);
-  // Draw work color swatch (filled rectangle)
   int16_t swatchWidth = 80;
   int16_t swatchHeight = 40;
-  gfx->fillRect(centerX - swatchWidth/2, workY - swatchHeight/2, swatchWidth, swatchHeight, workColor);
-  gfx->drawRect(centerX - swatchWidth/2, workY - swatchHeight/2, swatchWidth, swatchHeight, COLOR_WHITE);
   
-  // Draw "REST" label and color swatch at bottom
-  int16_t restY = centerY + 60;
-  drawCenteredText("REST", centerX, restY - 30, restColor, 2);
-  // Draw rest color swatch (filled rectangle)
-  gfx->fillRect(centerX - swatchWidth/2, restY - swatchHeight/2, swatchWidth, swatchHeight, restColor);
-  gfx->drawRect(centerX - swatchWidth/2, restY - swatchHeight/2, swatchWidth, swatchHeight, COLOR_WHITE);
+  if (isLandscape) {
+    // Landscape: work on left, rest on right
+    int16_t workX = centerX - 60;
+    int16_t restX = centerX + 60;
+    
+    // Draw "WORK" label and color swatch on left
+    drawCenteredText("WORK", workX, centerY - 40, workColor, 2);
+    gfx->fillRect(workX - swatchWidth/2, centerY - swatchHeight/2, swatchWidth, swatchHeight, workColor);
+    gfx->drawRect(workX - swatchWidth/2, centerY - swatchHeight/2, swatchWidth, swatchHeight, COLOR_WHITE);
+    
+    // Draw "REST" label and color swatch on right (clickable)
+    drawCenteredText("REST", restX, centerY - 40, restColor, 2);
+    previewRestSwatchLeft = restX - swatchWidth/2;
+    previewRestSwatchRight = restX + swatchWidth/2;
+    previewRestSwatchTop = centerY - swatchHeight/2;
+    previewRestSwatchBottom = centerY + swatchHeight/2;
+    gfx->fillRect(previewRestSwatchLeft, previewRestSwatchTop, swatchWidth, swatchHeight, restColor);
+    gfx->drawRect(previewRestSwatchLeft, previewRestSwatchTop, swatchWidth, swatchHeight, COLOR_WHITE);
+    previewRestSwatchValid = true;
+  } else {
+    // Portrait: work at top, rest at bottom
+    int16_t workY = centerY - 60;
+    int16_t restY = centerY + 60;
+    
+    // Draw "WORK" label and color swatch at top
+    drawCenteredText("WORK", centerX, workY - 30, workColor, 2);
+    gfx->fillRect(centerX - swatchWidth/2, workY - swatchHeight/2, swatchWidth, swatchHeight, workColor);
+    gfx->drawRect(centerX - swatchWidth/2, workY - swatchHeight/2, swatchWidth, swatchHeight, COLOR_WHITE);
+    
+    // Draw "REST" label and color swatch at bottom (clickable)
+    drawCenteredText("REST", centerX, restY - 30, restColor, 2);
+    previewRestSwatchLeft = centerX - swatchWidth/2;
+    previewRestSwatchRight = centerX + swatchWidth/2;
+    previewRestSwatchTop = restY - swatchHeight/2;
+    previewRestSwatchBottom = restY + swatchHeight/2;
+    gfx->fillRect(previewRestSwatchLeft, previewRestSwatchTop, swatchWidth, swatchHeight, restColor);
+    gfx->drawRect(previewRestSwatchLeft, previewRestSwatchTop, swatchWidth, swatchHeight, COLOR_WHITE);
+    previewRestSwatchValid = true;
+  }
   
-  // Draw X (cancel) and V (confirm) buttons at bottom
-  int16_t btnY = gfx->height() - 40;
+  // Draw X (cancel) and V (confirm) buttons
   int16_t btnSize = 30;
   int padding = 6;
   
-  // Cancel button (X) on left
-  int16_t cancelCenterX = gfx->width() / 4;
-  previewCancelBtnLeft = cancelCenterX - btnSize/2 - padding;
-  previewCancelBtnRight = cancelCenterX + btnSize/2 + padding;
-  previewCancelBtnTop = btnY - btnSize/2 - padding;
-  previewCancelBtnBottom = btnY + btnSize/2 + padding;
-  gfx->drawRect(previewCancelBtnLeft, previewCancelBtnTop,
-                previewCancelBtnRight - previewCancelBtnLeft,
-                previewCancelBtnBottom - previewCancelBtnTop,
-                COLOR_WHITE);
-  drawCenteredText("X", cancelCenterX, btnY, COLOR_WHITE, 3);
-  previewCancelBtnValid = true;
-  
-  // Confirm button (V) on right
-  int16_t confirmCenterX = gfx->width() * 3 / 4;
-  previewConfirmBtnLeft = confirmCenterX - btnSize/2 - padding;
-  previewConfirmBtnRight = confirmCenterX + btnSize/2 + padding;
-  previewConfirmBtnTop = btnY - btnSize/2 - padding;
-  previewConfirmBtnBottom = btnY + btnSize/2 + padding;
-  gfx->drawRect(previewConfirmBtnLeft, previewConfirmBtnTop,
-                previewConfirmBtnRight - previewConfirmBtnLeft,
-                previewConfirmBtnBottom - previewConfirmBtnTop,
-                COLOR_WHITE);
-  drawCenteredText("V", confirmCenterX, btnY, COLOR_WHITE, 3);
-  previewConfirmBtnValid = true;
+  if (isLandscape) {
+    // Landscape: buttons on right side, 1 column, 2 rows, V on top, X below
+    // Moved right a bit to avoid overlapping other UI
+    int16_t btnX = gfx->width() - 30;  // Right side with smaller margin (moved right)
+    int16_t confirmCenterY = centerY - 30;  // V on top
+    int16_t cancelCenterY = centerY + 30;    // X below
+    
+    // Confirm button (V) on top
+    previewConfirmBtnLeft = btnX - btnSize/2 - padding;
+    previewConfirmBtnRight = btnX + btnSize/2 + padding;
+    previewConfirmBtnTop = confirmCenterY - btnSize/2 - padding;
+    previewConfirmBtnBottom = confirmCenterY + btnSize/2 + padding;
+    gfx->drawRect(previewConfirmBtnLeft, previewConfirmBtnTop,
+                  previewConfirmBtnRight - previewConfirmBtnLeft,
+                  previewConfirmBtnBottom - previewConfirmBtnTop,
+                  COLOR_WHITE);
+    drawCenteredText("V", btnX, confirmCenterY, COLOR_WHITE, 3);
+    previewConfirmBtnValid = true;
+    
+    // Cancel button (X) below
+    previewCancelBtnLeft = btnX - btnSize/2 - padding;
+    previewCancelBtnRight = btnX + btnSize/2 + padding;
+    previewCancelBtnTop = cancelCenterY - btnSize/2 - padding;
+    previewCancelBtnBottom = cancelCenterY + btnSize/2 + padding;
+    gfx->drawRect(previewCancelBtnLeft, previewCancelBtnTop,
+                  previewCancelBtnRight - previewCancelBtnLeft,
+                  previewCancelBtnBottom - previewCancelBtnTop,
+                  COLOR_WHITE);
+    drawCenteredText("X", btnX, cancelCenterY, COLOR_WHITE, 3);
+    previewCancelBtnValid = true;
+  } else {
+    // Portrait: buttons at bottom, X on left, V on right
+    int16_t btnY = gfx->height() - 40;
+    
+    // Cancel button (X) on left
+    int16_t cancelCenterX = gfx->width() / 4;
+    previewCancelBtnLeft = cancelCenterX - btnSize/2 - padding;
+    previewCancelBtnRight = cancelCenterX + btnSize/2 + padding;
+    previewCancelBtnTop = btnY - btnSize/2 - padding;
+    previewCancelBtnBottom = btnY + btnSize/2 + padding;
+    gfx->drawRect(previewCancelBtnLeft, previewCancelBtnTop,
+                  previewCancelBtnRight - previewCancelBtnLeft,
+                  previewCancelBtnBottom - previewCancelBtnTop,
+                  COLOR_WHITE);
+    drawCenteredText("X", cancelCenterX, btnY, COLOR_WHITE, 3);
+    previewCancelBtnValid = true;
+    
+    // Confirm button (V) on right
+    int16_t confirmCenterX = gfx->width() * 3 / 4;
+    previewConfirmBtnLeft = confirmCenterX - btnSize/2 - padding;
+    previewConfirmBtnRight = confirmCenterX + btnSize/2 + padding;
+    previewConfirmBtnTop = btnY - btnSize/2 - padding;
+    previewConfirmBtnBottom = btnY + btnSize/2 + padding;
+    gfx->drawRect(previewConfirmBtnLeft, previewConfirmBtnTop,
+                  previewConfirmBtnRight - previewConfirmBtnLeft,
+                  previewConfirmBtnBottom - previewConfirmBtnTop,
+                  COLOR_WHITE);
+    drawCenteredText("V", confirmCenterX, btnY, COLOR_WHITE, 3);
+    previewConfirmBtnValid = true;
+  }
 }
 
 // --- Pomodoro control functions ---
@@ -1021,7 +1268,12 @@ uint16_t getCurrentUIColor() {
   if (isWorkSession) {
     return selectedWorkColor;  // Use user-selected color for work
   } else {
-    return invertColor(selectedWorkColor);  // Inverted color for rest
+    // Use selected rest color if set, otherwise use inverted work color
+    if (selectedRestColor != 0) {
+      return selectedRestColor;
+    } else {
+      return invertColor(selectedWorkColor);  // Inverted color for rest
+    }
   }
 }
 
@@ -1101,7 +1353,8 @@ unsigned long getCurrentDuration() {
 }
 
 void updateTimer() {
-  if (currentState == RUNNING) {
+  // Only update timer if it's actually running and we're not on home/preview screens
+  if (currentState == RUNNING && currentViewMode == 0) {
     unsigned long elapsed = millis() - startTime;
     unsigned long duration = getCurrentDuration();
     if (elapsed >= duration) {
@@ -1148,23 +1401,23 @@ void readTouchData() {
             uint16_t x = touch_points.coords[i].x;
             uint16_t y = touch_points.coords[i].y;
             // Native touch panel is 172x320 (portrait)
-            // Transform to rotated display coordinates
+            // Transform to rotated display coordinates (using working transformation from test)
             switch (gfx->getRotation()) {
               case 0:  // Portrait normal
-                touch_points.coords[i].x = 172 - 1 - x;
+                touch_points.coords[i].x = gfx->width() - 1 - x;
                 touch_points.coords[i].y = y;
                 break;
               case 1:  // Landscape right (320x172)
+                touch_points.coords[i].y = x;
                 touch_points.coords[i].x = y;
-                touch_points.coords[i].y = 172 - 1 - x;
                 break;
               case 2:  // Portrait upside down
                 touch_points.coords[i].x = x;
-                touch_points.coords[i].y = 320 - 1 - y;
+                touch_points.coords[i].y = gfx->height() - 1 - y;
                 break;
               case 3:  // Landscape left (320x172)
-                touch_points.coords[i].x = 320 - 1 - y;
-                touch_points.coords[i].y = x;
+                touch_points.coords[i].y = gfx->height() - 1 - x;
+                touch_points.coords[i].x = gfx->width() - 1 - y;
                 break;
             }
           }
@@ -1197,23 +1450,23 @@ void readTouchData() {
             uint16_t x = touch_points.coords[i].x;
             uint16_t y = touch_points.coords[i].y;
             // Native touch panel is 172x320 (portrait)
-            // Transform to rotated display coordinates
+            // Transform to rotated display coordinates (using working transformation from test)
             switch (gfx->getRotation()) {
               case 0:  // Portrait normal
-                touch_points.coords[i].x = 172 - 1 - x;
+                touch_points.coords[i].x = gfx->width() - 1 - x;
                 touch_points.coords[i].y = y;
                 break;
               case 1:  // Landscape right (320x172)
+                touch_points.coords[i].y = x;
                 touch_points.coords[i].x = y;
-                touch_points.coords[i].y = 172 - 1 - x;
                 break;
               case 2:  // Portrait upside down
                 touch_points.coords[i].x = x;
-                touch_points.coords[i].y = 320 - 1 - y;
+                touch_points.coords[i].y = gfx->height() - 1 - y;
                 break;
               case 3:  // Landscape left (320x172)
-                touch_points.coords[i].x = 320 - 1 - y;
-                touch_points.coords[i].y = x;
+                touch_points.coords[i].y = gfx->height() - 1 - x;
+                touch_points.coords[i].x = gfx->width() - 1 - y;
                 break;
             }
           }
@@ -1300,13 +1553,25 @@ void handleTouchInput() {
       int8_t tappedColorIndex = -1;  // Color cell tapped in grid (-1 = none)
       
       if (gridViewActive && lastTouchValid && tx >= 0 && ty >= 0) {
+        // Check if we're in landscape mode for proper touch detection
+        bool isLandscape = (currentRotation == 1 || currentRotation == 3);
+        
         // First check if tap is on a color cell
-        int16_t lastRowY = (gridNumRows - 1) * gridCellHeight;
-        if (ty < lastRowY) {
+        // In landscape mode, all rows are for colors
+        // In portrait mode, last row is for buttons
+        int16_t maxRowY;
+        if (isLandscape) {
+          maxRowY = gridNumRows * gridCellHeight;  // All rows for colors
+        } else {
+          maxRowY = (gridNumRows - 1) * gridCellHeight;  // Last row is for buttons
+        }
+        
+        if (ty < maxRowY) {
           // Calculate which cell was tapped
           int col = (tx - gridStartX) / gridCellWidth;
           int row = ty / gridCellHeight;
-          if (col >= 0 && col < gridNumCols && tx >= gridStartX && tx < gridStartX + gridNumCols * gridCellWidth) {
+          if (col >= 0 && col < gridNumCols && row >= 0 && row < gridNumRows &&
+              tx >= gridStartX && tx < gridStartX + gridNumCols * gridCellWidth) {
             int colorIdx = row * gridNumCols + col;
             if (colorIdx >= 0 && colorIdx < paletteSize) {
               tappedColorIndex = colorIdx;
@@ -1344,6 +1609,7 @@ void handleTouchInput() {
       // Check for color preview buttons - with extra touch padding
       bool inPreviewCancelButton = false;
       bool inPreviewConfirmButton = false;
+      bool inPreviewRestSwatch = false;
       if (currentViewMode == 2 && lastTouchValid && tx >= 0 && ty >= 0) {
         if (previewCancelBtnValid) {
           if (tx >= previewCancelBtnLeft - TOUCH_PADDING && tx <= previewCancelBtnRight + TOUCH_PADDING &&
@@ -1355,6 +1621,13 @@ void handleTouchInput() {
           if (tx >= previewConfirmBtnLeft - TOUCH_PADDING && tx <= previewConfirmBtnRight + TOUCH_PADDING &&
               ty >= previewConfirmBtnTop - TOUCH_PADDING && ty <= previewConfirmBtnBottom + TOUCH_PADDING) {
             inPreviewConfirmButton = true;
+          }
+        }
+        // Check for rest color swatch click
+        if (previewRestSwatchValid) {
+          if (tx >= previewRestSwatchLeft - TOUCH_PADDING && tx <= previewRestSwatchRight + TOUCH_PADDING &&
+              ty >= previewRestSwatchTop - TOUCH_PADDING && ty <= previewRestSwatchBottom + TOUCH_PADDING) {
+            inPreviewRestSwatch = true;
           }
         }
       }
@@ -1399,19 +1672,33 @@ void handleTouchInput() {
         currentViewMode = 0;  // Return to home
         displayStoppedState();  // Return to home screen
       } else if (inGridConfirmButton) {
-        // ✓ button clicked in grid view - go to color preview
+        // ✓ button clicked in grid view - go to color preview or save rest color
         Serial.println("*** GRID CONFIRM (✓) BUTTON CLICKED ***");
         if (tempSelectedColorIndex >= 0 && tempSelectedColorIndex < paletteSize) {
-          tempPreviewColor = paletteColors[tempSelectedColorIndex];
-          Serial.print("-> Preview color index: ");
-          Serial.print(tempSelectedColorIndex);
-          Serial.print(", color: 0x");
-          Serial.println(tempPreviewColor, HEX);
+          if (selectingRestColor) {
+            // Saving rest color selection
+            tempPreviewRestColor = paletteColors[tempSelectedColorIndex];
+            Serial.print("-> Selected rest color index: ");
+            Serial.print(tempSelectedColorIndex);
+            Serial.print(", color: 0x");
+            Serial.println(tempPreviewRestColor, HEX);
+            selectingRestColor = false;
+            gridViewActive = false;
+            currentViewMode = 2;  // Switch to color preview
+            drawColorPreview();
+          } else {
+            // Saving work color selection
+            tempPreviewColor = paletteColors[tempSelectedColorIndex];
+            Serial.print("-> Preview color index: ");
+            Serial.print(tempSelectedColorIndex);
+            Serial.print(", color: 0x");
+            Serial.println(tempPreviewColor, HEX);
+            tempSelectedColorIndex = -1;  // Clear temporary selection
+            gridViewActive = false;
+            currentViewMode = 2;  // Switch to color preview
+            drawColorPreview();
+          }
         }
-        tempSelectedColorIndex = -1;  // Clear temporary selection
-        gridViewActive = false;
-        currentViewMode = 2;  // Switch to color preview
-        drawColorPreview();
       } else if (tappedColorIndex >= 0) {
         // Color cell tapped - select it
         Serial.print("*** COLOR CELL TAPPED: ");
@@ -1419,26 +1706,72 @@ void handleTouchInput() {
         Serial.print(" (0x");
         Serial.print(paletteColors[tappedColorIndex], HEX);
         Serial.println(") ***");
+        
+        // Calculate row and col from color index
+        bool isLandscape = (currentRotation == 1 || currentRotation == 3);
+        int16_t rowsForColors = isLandscape ? gridNumRows : (gridNumRows - 1);
+        int newRow = tappedColorIndex / gridNumCols;
+        int newCol = tappedColorIndex % gridNumCols;
+        
+        // Redraw previous selection (remove border) if it exists
+        if (lastSelectedGridRow >= 0 && lastSelectedGridCol >= 0 && 
+            lastSelectedGridRow < rowsForColors && lastSelectedGridCol < gridNumCols) {
+          redrawGridCell(lastSelectedGridRow, lastSelectedGridCol, false);
+        }
+        
+        // Update selection
         tempSelectedColorIndex = tappedColorIndex;
-        drawGrid();  // Redraw grid with new selection highlighted
+        lastSelectedGridRow = newRow;
+        lastSelectedGridCol = newCol;
+        
+        // Redraw new selection (add border)
+        if (newRow < rowsForColors && newCol < gridNumCols) {
+          redrawGridCell(newRow, newCol, true);
+        }
       } else if (inPreviewCancelButton) {
         // X button clicked on color preview - return to home without saving
         Serial.println("*** PREVIEW CANCEL (X) BUTTON CLICKED ***");
+        selectingRestColor = false;
+        tempPreviewRestColor = 0;
         currentViewMode = 0;
         displayStoppedState();
+      } else if (inPreviewRestSwatch) {
+        // Rest color swatch clicked - open color picker for rest color
+        Serial.println("*** REST COLOR SWATCH CLICKED ***");
+        selectingRestColor = true;
+        tempSelectedColorIndex = -1;  // Reset temporary selection
+        tempPreviewRestColor = 0;     // Reset to use inverted work color by default
+        gridViewActive = true;
+        currentViewMode = 1;  // Grid/palette view
+        drawGrid();
       } else if (inPreviewConfirmButton) {
-        // V button clicked on color preview - save color and return to home
+        // V button clicked on color preview - save colors and return to home
         Serial.println("*** PREVIEW CONFIRM (V) BUTTON CLICKED ***");
         selectedWorkColor = tempPreviewColor;
+        if (tempPreviewRestColor != 0) {
+          selectedRestColor = tempPreviewRestColor;
+        } else {
+          selectedRestColor = 0;  // Use inverted work color
+        }
         saveSelectedColor();  // Save to NVS for persistence
-        Serial.print("-> Saved color: 0x");
+        Serial.print("-> Saved work color: 0x");
         Serial.println(selectedWorkColor, HEX);
+        if (selectedRestColor != 0) {
+          Serial.print("-> Saved rest color: 0x");
+          Serial.println(selectedRestColor, HEX);
+        } else {
+          Serial.println("-> Rest color: inverted work color");
+        }
+        selectingRestColor = false;
         currentViewMode = 0;
         displayStoppedState();
       } else if (inGearButton) {
         // Gear button clicked on home screen - show grid view (palette)
         Serial.println("*** GEAR BUTTON CLICKED ***");
+        selectingRestColor = false;  // Start with work color selection
         tempSelectedColorIndex = -1;  // Reset temporary selection
+        tempPreviewColor = selectedWorkColor;  // Initialize preview with current work color
+        tempPreviewRestColor = (selectedRestColor != 0) ? selectedRestColor : 0;  // Initialize preview with current rest color
         gridViewActive = true;
         currentViewMode = 1;  // Grid/palette view
         drawGrid();
@@ -1674,30 +2007,90 @@ void drawTimer() {
     
     // Draw mode button (left side in landscape, top center in portrait)
     const char *modeTxt = nullptr;
+    const char *modeLine1 = nullptr;
+    const char *modeLine2 = nullptr;
+    const char *modeLine3 = nullptr;
+    
     switch (currentMode) {
-      case MODE_1_1:  modeTxt = "1/1"; break;
-      case MODE_25_5: modeTxt = "25/5"; break;
-      case MODE_50_10: modeTxt = "50/10"; break;
-      default: modeTxt = "25/5"; break;
+      case MODE_1_1:
+        modeTxt = "1/1";
+        modeLine1 = "1";
+        modeLine2 = "/";
+        modeLine3 = "1";
+        break;
+      case MODE_25_5:
+        modeTxt = "25/5";
+        modeLine1 = "25";
+        modeLine2 = "/";
+        modeLine3 = "5";
+        break;
+      case MODE_50_10:
+        modeTxt = "50/10";
+        modeLine1 = "50";
+        modeLine2 = "/";
+        modeLine3 = "10";
+        break;
+      default:
+        modeTxt = "25/5";
+        modeLine1 = "25";
+        modeLine2 = "/";
+        modeLine3 = "5";
+        break;
     }
     
     gfx->setFont(nullptr);
     gfx->setTextSize(3, 3, 0);
-    gfx->getTextBounds(modeTxt, 0, 0, &x1, &y1, &w, &h);
     
     padding = 4;
     int16_t modeCenterX, modeCenterY;
     
     if (isLandscape) {
       // Landscape: mode button on the left side, vertically centered
+      // Display mode as multi-line: number, /, number (each on new line)
+      int16_t x1_line1, y1_line1, x1_line2, y1_line2, x1_line3, y1_line3;
+      uint16_t w1, h1, w2, h2, w3, h3;
+      
+      // Get bounds for each line
+      gfx->getTextBounds(modeLine1, 0, 0, &x1_line1, &y1_line1, &w1, &h1);
+      gfx->getTextBounds(modeLine2, 0, 0, &x1_line2, &y1_line2, &w2, &h2);
+      gfx->getTextBounds(modeLine3, 0, 0, &x1_line3, &y1_line3, &w3, &h3);
+      
+      // Calculate button size based on multi-line text
+      uint16_t maxW = (w1 > w2) ? ((w1 > w3) ? w1 : w3) : ((w2 > w3) ? w2 : w3);
+      uint16_t totalH = h1 + h2 + h3 + 4;  // 4px spacing between lines
+      int16_t extraBottomPadding = 24;  // Extra padding at bottom to make rectangle even longer
+      
       modeCenterX = 35;
       modeCenterY = gfx->height() / 2;
-      modeBtnLeft   = modeCenterX - (int16_t)w / 2 - padding;
-      modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
-      modeBtnTop    = modeCenterY - (int16_t)h / 2 - padding;
-      modeBtnBottom = modeCenterY + (int16_t)h / 2 + padding;
+      modeBtnLeft   = modeCenterX - (int16_t)maxW / 2 - padding;
+      modeBtnRight  = modeCenterX + (int16_t)maxW / 2 + padding;
+      modeBtnTop    = modeCenterY - (int16_t)totalH / 2 - padding;
+      modeBtnBottom = modeCenterY + (int16_t)totalH / 2 + padding + extraBottomPadding;
+      
+      // Draw 1-pixel border around mode button
+      gfx->drawRect(modeBtnLeft, modeBtnTop,
+                    modeBtnRight - modeBtnLeft,
+                    modeBtnBottom - modeBtnTop,
+                    uiColor);
+      
+      // Draw multi-line text centered inside the button
+      int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
+      int16_t lineSpacing = 2;
+      int16_t startY = modeBtnTop + padding + h1 / 2 - y1_line1;
+      
+      // Line 1 (number)
+      drawCenteredText(modeLine1, modeBtnCenterX, startY, uiColor, 3);
+      
+      // Line 2 (/)
+      int16_t line2Y = startY + h1 + lineSpacing + h2 / 2 - y1_line2;
+      drawCenteredText(modeLine2, modeBtnCenterX, line2Y, uiColor, 3);
+      
+      // Line 3 (number)
+      int16_t line3Y = line2Y + h2 + lineSpacing + h3 / 2 - y1_line3;
+      drawCenteredText(modeLine3, modeBtnCenterX, line3Y, uiColor, 3);
     } else {
-      // Portrait: mode button at the top center
+      // Portrait: mode button at the top center (single line)
+      gfx->getTextBounds(modeTxt, 0, 0, &x1, &y1, &w, &h);
       int16_t topMargin = 24;
       modeCenterX = gfx->width() / 2;
       int16_t modeY = topMargin + (int16_t)h + padding;
@@ -1705,18 +2098,19 @@ void drawTimer() {
       modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
       modeBtnTop    = topMargin;
       modeBtnBottom = modeY + padding;
+      
+      // Draw 1-pixel border around mode button
+      gfx->drawRect(modeBtnLeft, modeBtnTop,
+                    modeBtnRight - modeBtnLeft,
+                    modeBtnBottom - modeBtnTop,
+                    uiColor);
+      
+      // Draw mode text centered inside the button
+      int16_t modeBtnCenterY = (modeBtnTop + modeBtnBottom) / 2;
+      int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
+      drawCenteredText(modeTxt, modeBtnCenterX, modeBtnCenterY, uiColor, 3);
     }
     
-    // Draw 1-pixel border around mode button
-    gfx->drawRect(modeBtnLeft, modeBtnTop,
-                  modeBtnRight - modeBtnLeft,
-                  modeBtnBottom - modeBtnTop,
-                  uiColor);
-    
-    // Draw mode text centered inside the button
-    int16_t modeBtnCenterY = (modeBtnTop + modeBtnBottom) / 2;
-    int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
-    drawCenteredText(modeTxt, modeBtnCenterX, modeBtnCenterY, uiColor, 3);
     modeBtnValid = true;
     lastDisplayedMode = currentMode;
     
@@ -1836,11 +2230,35 @@ void drawTimer() {
   // Update mode button if mode changed
   if (currentMode != lastDisplayedMode) {
     const char *modeTxt = nullptr;
+    const char *modeLine1 = nullptr;
+    const char *modeLine2 = nullptr;
+    const char *modeLine3 = nullptr;
+    
     switch (currentMode) {
-      case MODE_1_1:  modeTxt = "1/1"; break;
-      case MODE_25_5: modeTxt = "25/5"; break;
-      case MODE_50_10: modeTxt = "50/10"; break;
-      default: modeTxt = "25/5"; break;
+      case MODE_1_1:
+        modeTxt = "1/1";
+        modeLine1 = "1";
+        modeLine2 = "/";
+        modeLine3 = "1";
+        break;
+      case MODE_25_5:
+        modeTxt = "25/5";
+        modeLine1 = "25";
+        modeLine2 = "/";
+        modeLine3 = "5";
+        break;
+      case MODE_50_10:
+        modeTxt = "50/10";
+        modeLine1 = "50";
+        modeLine2 = "/";
+        modeLine3 = "10";
+        break;
+      default:
+        modeTxt = "25/5";
+        modeLine1 = "25";
+        modeLine2 = "/";
+        modeLine3 = "5";
+        break;
     }
     
     // Erase old mode button if it existed
@@ -1855,21 +2273,56 @@ void drawTimer() {
     uint16_t w, h;
     gfx->setFont(nullptr);
     gfx->setTextSize(3, 3, 0);
-    gfx->getTextBounds(modeTxt, 0, 0, &x1, &y1, &w, &h);
     
     int padding = 4;
     int16_t modeCenterX, modeCenterY;
     
     if (isLandscape) {
-      // Landscape: mode button on the left side
+      // Landscape: mode button on the left side, multi-line display
+      int16_t x1_line1, y1_line1, x1_line2, y1_line2, x1_line3, y1_line3;
+      uint16_t w1, h1, w2, h2, w3, h3;
+      
+      // Get bounds for each line
+      gfx->getTextBounds(modeLine1, 0, 0, &x1_line1, &y1_line1, &w1, &h1);
+      gfx->getTextBounds(modeLine2, 0, 0, &x1_line2, &y1_line2, &w2, &h2);
+      gfx->getTextBounds(modeLine3, 0, 0, &x1_line3, &y1_line3, &w3, &h3);
+      
+      // Calculate button size based on multi-line text
+      uint16_t maxW = (w1 > w2) ? ((w1 > w3) ? w1 : w3) : ((w2 > w3) ? w2 : w3);
+      uint16_t totalH = h1 + h2 + h3 + 4;  // 4px spacing between lines
+      int16_t extraBottomPadding = 24;  // Extra padding at bottom to make rectangle even longer
+      
       modeCenterX = 35;
       modeCenterY = gfx->height() / 2;
-      modeBtnLeft   = modeCenterX - (int16_t)w / 2 - padding;
-      modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
-      modeBtnTop    = modeCenterY - (int16_t)h / 2 - padding;
-      modeBtnBottom = modeCenterY + (int16_t)h / 2 + padding;
+      modeBtnLeft   = modeCenterX - (int16_t)maxW / 2 - padding;
+      modeBtnRight  = modeCenterX + (int16_t)maxW / 2 + padding;
+      modeBtnTop    = modeCenterY - (int16_t)totalH / 2 - padding;
+      modeBtnBottom = modeCenterY + (int16_t)totalH / 2 + padding + extraBottomPadding;
+      
+      // Draw new border
+      gfx->drawRect(modeBtnLeft, modeBtnTop,
+                    modeBtnRight - modeBtnLeft,
+                    modeBtnBottom - modeBtnTop,
+                    uiColor);
+      
+      // Draw multi-line text centered inside the button
+      int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
+      int16_t lineSpacing = 2;
+      int16_t startY = modeBtnTop + padding + h1 / 2 - y1_line1;
+      
+      // Line 1 (number)
+      drawCenteredText(modeLine1, modeBtnCenterX, startY, uiColor, 3);
+      
+      // Line 2 (/)
+      int16_t line2Y = startY + h1 + lineSpacing + h2 / 2 - y1_line2;
+      drawCenteredText(modeLine2, modeBtnCenterX, line2Y, uiColor, 3);
+      
+      // Line 3 (number)
+      int16_t line3Y = line2Y + h2 + lineSpacing + h3 / 2 - y1_line3;
+      drawCenteredText(modeLine3, modeBtnCenterX, line3Y, uiColor, 3);
     } else {
-      // Portrait: mode button at the top center
+      // Portrait: mode button at the top center (single line)
+      gfx->getTextBounds(modeTxt, 0, 0, &x1, &y1, &w, &h);
       int16_t topMargin = 24;
       modeCenterX = gfx->width() / 2;
       int16_t modeY = topMargin + (int16_t)h + padding;
@@ -1877,18 +2330,19 @@ void drawTimer() {
       modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
       modeBtnTop    = topMargin;
       modeBtnBottom = modeY + padding;
+      
+      // Draw new border
+      gfx->drawRect(modeBtnLeft, modeBtnTop,
+                    modeBtnRight - modeBtnLeft,
+                    modeBtnBottom - modeBtnTop,
+                    uiColor);
+      
+      // Draw text
+      int16_t modeBtnCenterY = (modeBtnTop + modeBtnBottom) / 2;
+      int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
+      drawCenteredText(modeTxt, modeBtnCenterX, modeBtnCenterY, uiColor, 3);
     }
     
-    // Draw new border
-    gfx->drawRect(modeBtnLeft, modeBtnTop,
-                  modeBtnRight - modeBtnLeft,
-                  modeBtnBottom - modeBtnTop,
-                  uiColor);
-    
-    // Draw text
-    int16_t modeBtnCenterY = (modeBtnTop + modeBtnBottom) / 2;
-    int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
-    drawCenteredText(modeTxt, modeBtnCenterX, modeBtnCenterY, uiColor, 3);
     modeBtnValid = true;
     lastDisplayedMode = currentMode;
   }
@@ -2014,12 +2468,18 @@ void applyRotation(uint8_t newRotation) {
   forceCircleRedraw = true;  // Reset progress circle state
   memset(lastTimeStr, 0, sizeof(lastTimeStr));
   
-  // Redraw current screen
-  if (currentState == STOPPED && !gridViewActive) {
+  // Redraw current screen based on current view mode
+  if (currentViewMode == 2) {
+    // Color preview screen - just redraw it
+    drawColorPreview();
+  } else if (currentState == STOPPED && currentViewMode == 0) {
+    // Home screen
     drawSplash();
-  } else if (gridViewActive) {
+  } else if (currentViewMode == 1 || gridViewActive) {
+    // Grid/palette view
     drawGrid();
   } else {
+    // Timer screen
     gfx->fillScreen(COLOR_BLACK);
     drawTimer();
   }
