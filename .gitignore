@@ -52,5 +52,5 @@ ENV/
 config.h
 
 # Dependencies
-lib/
 libraries/
+secrets.ini
