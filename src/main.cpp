@@ -234,10 +234,12 @@ static const int TP_INT = 21;
 
 TimerState currentState = STOPPED;
 PomodoroMode currentMode = MODE_25_5;  // Default to standard 25/5 mode
-// View mode: false = normal view, true = grid view
-bool gridViewActive = false;
+// View mode: 0 = normal view, 1 = grid view (palette), 2 = color preview
+uint8_t currentViewMode = 0;
+bool gridViewActive = false;  // Kept for backward compatibility
 // Selected color for work session (user-customizable)
 uint16_t selectedWorkColor = COLOR_GOLD;  // Default work color
+uint16_t tempPreviewColor = COLOR_GOLD;   // Temporary color for preview
 int8_t tempSelectedColorIndex = -1;       // Temporary selection in grid (-1 = none)
 // Grid parameters (needed for touch detection)
 static int16_t gridCellWidth = 43;
@@ -312,6 +314,25 @@ static int16_t gridConfirmBtnTop = 0;
 static int16_t gridConfirmBtnBottom = 0;
 static bool gridConfirmBtnValid = false;
 
+// Color preview button bounds (for confirm/cancel on color preview screen)
+static int16_t previewCancelBtnLeft = 0;
+static int16_t previewCancelBtnRight = 0;
+static int16_t previewCancelBtnTop = 0;
+static int16_t previewCancelBtnBottom = 0;
+static bool previewCancelBtnValid = false;
+static int16_t previewConfirmBtnLeft = 0;
+static int16_t previewConfirmBtnRight = 0;
+static int16_t previewConfirmBtnTop = 0;
+static int16_t previewConfirmBtnBottom = 0;
+static bool previewConfirmBtnValid = false;
+
+// Gear button bounds (settings button on home screen)
+static int16_t gearBtnLeft = 0;
+static int16_t gearBtnRight = 0;
+static int16_t gearBtnTop = 0;
+static int16_t gearBtnBottom = 0;
+static bool gearBtnValid = false;
+
 // Last known touch position (for button hit-test & indicator)
 static int16_t lastTouchX = 0;
 static int16_t lastTouchY = 0;
@@ -329,6 +350,8 @@ static const int TAP_RADIUS = 4;  // Twice smaller than before (was 8)
 
 // Forward declarations
 void drawCenteredText(const char *txt, int16_t cx, int16_t cy, uint16_t color, uint8_t size);
+void drawGearIcon(int16_t cx, int16_t cy, int16_t size, uint16_t color);
+void drawColorPreview();
 
 // Save selected color to NVS (persistent storage)
 void saveSelectedColor() {
@@ -352,10 +375,11 @@ void loadSelectedColor() {
 void drawSplash() {
   gfx->fillScreen(COLOR_BLACK);
 
-  // Use selected work color for logo and work button
+  // Use selected work color for logo
   uint16_t workColor = selectedWorkColor;
-  // Use inverted color for rest button
-  uint16_t restColor = invertColor(selectedWorkColor);
+  
+  // Check if we're in landscape mode
+  bool isLandscape = (currentRotation == 1 || currentRotation == 3);
   
   int16_t centerX = gfx->width() / 2;
   int16_t centerY = gfx->height() / 2;
@@ -372,58 +396,34 @@ void drawSplash() {
   gfx->setCursor(centerX - 33, centerY + 30);
   gfx->print("R");
   
-  // Draw "work" button at the top
-  const char *workTxt = "work";
-  int16_t workCenterX = gfx->width() / 2;
-  int16_t topMargin = 24;  // Same margin as mode button
+  // Draw gear icon (settings button)
+  int16_t gearSize = 36;
+  int16_t gearCenterX, gearCenterY;
   
-  int16_t x1, y1;
-  uint16_t w, h;
-  gfx->setFont(nullptr);
-  gfx->setTextSize(3, 3, 0);
-  gfx->getTextBounds(workTxt, 0, 0, &x1, &y1, &w, &h);
+  if (isLandscape) {
+    // Landscape: gear button on the right side
+    gearCenterX = gfx->width() - 40;
+    gearCenterY = gfx->height() / 2;
+  } else {
+    // Portrait: gear button at the bottom center
+    gearCenterX = gfx->width() / 2;
+    gearCenterY = gfx->height() - 40;
+  }
   
-  int padding = 4;
-  int16_t workY = topMargin + (int16_t)h + padding;
-  workBtnLeft   = workCenterX - (int16_t)w / 2 - padding;
-  workBtnRight  = workCenterX + (int16_t)w / 2 + padding;
-  workBtnTop    = topMargin;
-  workBtnBottom = workY + padding;
+  // Set gear button bounds for touch detection
+  int padding = 8;
+  gearBtnLeft = gearCenterX - gearSize/2 - padding;
+  gearBtnRight = gearCenterX + gearSize/2 + padding;
+  gearBtnTop = gearCenterY - gearSize/2 - padding;
+  gearBtnBottom = gearCenterY + gearSize/2 + padding;
   
-  // Draw border around work button with selected color
-  gfx->drawRect(workBtnLeft, workBtnTop,
-                workBtnRight - workBtnLeft,
-                workBtnBottom - workBtnTop,
-                workColor);
+  // Draw gear icon
+  drawGearIcon(gearCenterX, gearCenterY, gearSize, workColor);
+  gearBtnValid = true;
   
-  // Draw work text centered inside the button
-  int16_t workBtnCenterY = (workBtnTop + workBtnBottom) / 2;
-  drawCenteredText(workTxt, workCenterX, workBtnCenterY, workColor, 3);
-  workBtnValid = true;
-  
-  // Draw "rest" button at the bottom with inverted color
-  const char *restTxt = "rest";
-  int16_t restCenterX = gfx->width() / 2;
-  int16_t restY = gfx->height() - 30;  // Same position as status button
-  
-  gfx->getTextBounds(restTxt, 0, 0, &x1, &y1, &w, &h);
-  
-  padding = 6;
-  restBtnLeft   = restCenterX - (int16_t)w / 2 - padding;
-  restBtnRight  = restCenterX + (int16_t)w / 2 + padding;
-  restBtnTop    = restY - (int16_t)h - padding;
-  restBtnBottom = restY + padding;
-  
-  // Draw border around rest button with inverted color
-  gfx->drawRect(restBtnLeft, restBtnTop,
-                restBtnRight - restBtnLeft,
-                restBtnBottom - restBtnTop,
-                restColor);
-  
-  // Draw rest text centered inside the button
-  int16_t restBtnCenterY = (restBtnTop + restBtnBottom) / 2;
-  drawCenteredText(restTxt, restCenterX, restBtnCenterY, restColor, 3);
-  restBtnValid = true;
+  // Disable old work/rest buttons
+  workBtnValid = false;
+  restBtnValid = false;
 }
 
 // --- Helper: draw grid view (3 columns, X rows with square cells) ---
@@ -588,6 +588,126 @@ void drawCenteredText(const char *txt, int16_t cx, int16_t cy, uint16_t color, u
   gfx->print(txt);
 }
 
+// --- Helper: draw play icon (triangle) ---
+void drawPlayIcon(int16_t cx, int16_t cy, int16_t size, uint16_t color) {
+  // Draw a filled triangle pointing right
+  int16_t halfH = size / 2;
+  int16_t w = size * 3 / 4;
+  // Triangle vertices: left-top, left-bottom, right-center
+  gfx->fillTriangle(
+    cx - w/2, cy - halfH,      // top-left
+    cx - w/2, cy + halfH,      // bottom-left
+    cx + w/2, cy,              // right center
+    color
+  );
+}
+
+// --- Helper: draw pause icon (two bars) ---
+void drawPauseIcon(int16_t cx, int16_t cy, int16_t size, uint16_t color) {
+  // Draw two vertical bars
+  int16_t barWidth = size / 4;
+  int16_t barHeight = size;
+  int16_t gap = size / 4;
+  // Left bar
+  gfx->fillRect(cx - gap - barWidth, cy - barHeight/2, barWidth, barHeight, color);
+  // Right bar  
+  gfx->fillRect(cx + gap, cy - barHeight/2, barWidth, barHeight, color);
+}
+
+// --- Helper: draw gear icon (settings) ---
+void drawGearIcon(int16_t cx, int16_t cy, int16_t size, uint16_t color) {
+  // Draw a simple gear: outer circle with teeth + inner circle
+  int16_t outerRadius = size / 2;
+  int16_t innerRadius = size / 4;
+  int16_t toothLength = size / 6;
+  int numTeeth = 8;
+  
+  // Draw outer ring
+  for (int16_t i = 0; i < 3; i++) {
+    gfx->drawCircle(cx, cy, outerRadius - i, color);
+  }
+  
+  // Draw inner circle (hollow center)
+  gfx->fillCircle(cx, cy, innerRadius + 2, COLOR_BLACK);
+  for (int16_t i = 0; i < 2; i++) {
+    gfx->drawCircle(cx, cy, innerRadius - i, color);
+  }
+  
+  // Draw teeth around the gear
+  for (int i = 0; i < numTeeth; i++) {
+    float angle = (i * 2.0f * PI) / numTeeth;
+    int16_t x1 = cx + (outerRadius - 2) * cosf(angle);
+    int16_t y1 = cy + (outerRadius - 2) * sinf(angle);
+    int16_t x2 = cx + (outerRadius + toothLength) * cosf(angle);
+    int16_t y2 = cy + (outerRadius + toothLength) * sinf(angle);
+    // Draw thick tooth (3 lines)
+    for (int t = -1; t <= 1; t++) {
+      float perpAngle = angle + PI / 2;
+      int16_t offsetX = t * cosf(perpAngle);
+      int16_t offsetY = t * sinf(perpAngle);
+      gfx->drawLine(x1 + offsetX, y1 + offsetY, x2 + offsetX, y2 + offsetY, color);
+    }
+  }
+}
+
+// --- Helper: draw color preview screen ---
+void drawColorPreview() {
+  gfx->fillScreen(COLOR_BLACK);
+  
+  uint16_t workColor = tempPreviewColor;
+  uint16_t restColor = invertColor(tempPreviewColor);
+  
+  int16_t centerX = gfx->width() / 2;
+  int16_t centerY = gfx->height() / 2;
+  
+  // Draw "WORK" label and color swatch at top
+  int16_t workY = centerY - 60;
+  drawCenteredText("WORK", centerX, workY - 30, workColor, 2);
+  // Draw work color swatch (filled rectangle)
+  int16_t swatchWidth = 80;
+  int16_t swatchHeight = 40;
+  gfx->fillRect(centerX - swatchWidth/2, workY - swatchHeight/2, swatchWidth, swatchHeight, workColor);
+  gfx->drawRect(centerX - swatchWidth/2, workY - swatchHeight/2, swatchWidth, swatchHeight, COLOR_WHITE);
+  
+  // Draw "REST" label and color swatch at bottom
+  int16_t restY = centerY + 60;
+  drawCenteredText("REST", centerX, restY - 30, restColor, 2);
+  // Draw rest color swatch (filled rectangle)
+  gfx->fillRect(centerX - swatchWidth/2, restY - swatchHeight/2, swatchWidth, swatchHeight, restColor);
+  gfx->drawRect(centerX - swatchWidth/2, restY - swatchHeight/2, swatchWidth, swatchHeight, COLOR_WHITE);
+  
+  // Draw X (cancel) and V (confirm) buttons at bottom
+  int16_t btnY = gfx->height() - 40;
+  int16_t btnSize = 30;
+  int padding = 6;
+  
+  // Cancel button (X) on left
+  int16_t cancelCenterX = gfx->width() / 4;
+  previewCancelBtnLeft = cancelCenterX - btnSize/2 - padding;
+  previewCancelBtnRight = cancelCenterX + btnSize/2 + padding;
+  previewCancelBtnTop = btnY - btnSize/2 - padding;
+  previewCancelBtnBottom = btnY + btnSize/2 + padding;
+  gfx->drawRect(previewCancelBtnLeft, previewCancelBtnTop,
+                previewCancelBtnRight - previewCancelBtnLeft,
+                previewCancelBtnBottom - previewCancelBtnTop,
+                COLOR_WHITE);
+  drawCenteredText("X", cancelCenterX, btnY, COLOR_WHITE, 3);
+  previewCancelBtnValid = true;
+  
+  // Confirm button (V) on right
+  int16_t confirmCenterX = gfx->width() * 3 / 4;
+  previewConfirmBtnLeft = confirmCenterX - btnSize/2 - padding;
+  previewConfirmBtnRight = confirmCenterX + btnSize/2 + padding;
+  previewConfirmBtnTop = btnY - btnSize/2 - padding;
+  previewConfirmBtnBottom = btnY + btnSize/2 + padding;
+  gfx->drawRect(previewConfirmBtnLeft, previewConfirmBtnTop,
+                previewConfirmBtnRight - previewConfirmBtnLeft,
+                previewConfirmBtnBottom - previewConfirmBtnTop,
+                COLOR_WHITE);
+  drawCenteredText("V", confirmCenterX, btnY, COLOR_WHITE, 3);
+  previewConfirmBtnValid = true;
+}
+
 // --- Pomodoro control functions ---
 // Helper function to get current UI color based on work/rest session
 uint16_t getCurrentUIColor() {
@@ -697,22 +817,24 @@ void readTouchData() {
             
             uint16_t x = touch_points.coords[i].x;
             uint16_t y = touch_points.coords[i].y;
+            // Native touch panel is 172x320 (portrait)
+            // Transform to rotated display coordinates
             switch (gfx->getRotation()) {
-              case 1:
-                touch_points.coords[i].y = x;
-                touch_points.coords[i].x = y;
-                break;
-              case 2:
-                touch_points.coords[i].x = x;
-                touch_points.coords[i].y = gfx->height() - 1 - y;
-                break;
-              case 3:
-                touch_points.coords[i].y = gfx->height() - 1 - x;
-                touch_points.coords[i].x = gfx->width() - 1 - y;
-                break;
-              default:
-                touch_points.coords[i].x = gfx->width() - 1 - x;
+              case 0:  // Portrait normal
+                touch_points.coords[i].x = 172 - 1 - x;
                 touch_points.coords[i].y = y;
+                break;
+              case 1:  // Landscape right (320x172)
+                touch_points.coords[i].x = y;
+                touch_points.coords[i].y = 172 - 1 - x;
+                break;
+              case 2:  // Portrait upside down
+                touch_points.coords[i].x = x;
+                touch_points.coords[i].y = 320 - 1 - y;
+                break;
+              case 3:  // Landscape left (320x172)
+                touch_points.coords[i].x = 320 - 1 - y;
+                touch_points.coords[i].y = x;
                 break;
             }
           }
@@ -744,22 +866,24 @@ void readTouchData() {
             
             uint16_t x = touch_points.coords[i].x;
             uint16_t y = touch_points.coords[i].y;
+            // Native touch panel is 172x320 (portrait)
+            // Transform to rotated display coordinates
             switch (gfx->getRotation()) {
-              case 1:
-                touch_points.coords[i].y = x;
-                touch_points.coords[i].x = y;
-                break;
-              case 2:
-                touch_points.coords[i].x = x;
-                touch_points.coords[i].y = gfx->height() - 1 - y;
-                break;
-              case 3:
-                touch_points.coords[i].y = gfx->height() - 1 - x;
-                touch_points.coords[i].x = gfx->width() - 1 - y;
-                break;
-              default:
-                touch_points.coords[i].x = gfx->width() - 1 - x;
+              case 0:  // Portrait normal
+                touch_points.coords[i].x = 172 - 1 - x;
                 touch_points.coords[i].y = y;
+                break;
+              case 1:  // Landscape right (320x172)
+                touch_points.coords[i].x = y;
+                touch_points.coords[i].y = 172 - 1 - x;
+                break;
+              case 2:  // Portrait upside down
+                touch_points.coords[i].x = x;
+                touch_points.coords[i].y = 320 - 1 - y;
+                break;
+              case 3:  // Landscape left (320x172)
+                touch_points.coords[i].x = 320 - 1 - y;
+                touch_points.coords[i].y = x;
                 break;
             }
           }
@@ -876,20 +1000,31 @@ void handleTouchInput() {
         }
       }
 
-      // Check for home screen buttons (work/rest) when stopped
-      bool inWorkButton = false;
-      bool inRestButton = false;
-      if (currentState == STOPPED && !gridViewActive && lastTouchValid && tx >= 0 && ty >= 0) {
-        if (workBtnValid) {
-          if (tx >= workBtnLeft && tx <= workBtnRight &&
-              ty >= workBtnTop  && ty <= workBtnBottom) {
-            inWorkButton = true;
+      // Check for home screen gear button (settings) when stopped
+      bool inGearButton = false;
+      if (currentState == STOPPED && currentViewMode == 0 && lastTouchValid && tx >= 0 && ty >= 0) {
+        if (gearBtnValid) {
+          if (tx >= gearBtnLeft && tx <= gearBtnRight &&
+              ty >= gearBtnTop  && ty <= gearBtnBottom) {
+            inGearButton = true;
           }
         }
-        if (restBtnValid) {
-          if (tx >= restBtnLeft && tx <= restBtnRight &&
-              ty >= restBtnTop  && ty <= restBtnBottom) {
-            inRestButton = true;
+      }
+      
+      // Check for color preview buttons
+      bool inPreviewCancelButton = false;
+      bool inPreviewConfirmButton = false;
+      if (currentViewMode == 2 && lastTouchValid && tx >= 0 && ty >= 0) {
+        if (previewCancelBtnValid) {
+          if (tx >= previewCancelBtnLeft && tx <= previewCancelBtnRight &&
+              ty >= previewCancelBtnTop  && ty <= previewCancelBtnBottom) {
+            inPreviewCancelButton = true;
+          }
+        }
+        if (previewConfirmBtnValid) {
+          if (tx >= previewConfirmBtnLeft && tx <= previewConfirmBtnRight &&
+              ty >= previewConfirmBtnTop  && ty <= previewConfirmBtnBottom) {
+            inPreviewConfirmButton = true;
           }
         }
       }
@@ -931,21 +1066,22 @@ void handleTouchInput() {
         Serial.println("*** GRID CANCEL (X) BUTTON CLICKED ***");
         tempSelectedColorIndex = -1;  // Clear temporary selection
         gridViewActive = false;
+        currentViewMode = 0;  // Return to home
         displayStoppedState();  // Return to home screen
       } else if (inGridConfirmButton) {
-        // ✓ button clicked in grid view - save selected color and return
+        // ✓ button clicked in grid view - go to color preview
         Serial.println("*** GRID CONFIRM (✓) BUTTON CLICKED ***");
         if (tempSelectedColorIndex >= 0 && tempSelectedColorIndex < paletteSize) {
-          selectedWorkColor = paletteColors[tempSelectedColorIndex];
-          saveSelectedColor();  // Save to NVS for persistence
-          Serial.print("-> Saved color index: ");
+          tempPreviewColor = paletteColors[tempSelectedColorIndex];
+          Serial.print("-> Preview color index: ");
           Serial.print(tempSelectedColorIndex);
           Serial.print(", color: 0x");
-          Serial.println(selectedWorkColor, HEX);
+          Serial.println(tempPreviewColor, HEX);
         }
         tempSelectedColorIndex = -1;  // Clear temporary selection
         gridViewActive = false;
-        displayStoppedState();  // Return to home screen
+        currentViewMode = 2;  // Switch to color preview
+        drawColorPreview();
       } else if (tappedColorIndex >= 0) {
         // Color cell tapped - select it
         Serial.print("*** COLOR CELL TAPPED: ");
@@ -955,16 +1091,27 @@ void handleTouchInput() {
         Serial.println(") ***");
         tempSelectedColorIndex = tappedColorIndex;
         drawGrid();  // Redraw grid with new selection highlighted
-      } else if (inWorkButton) {
-        // Work button clicked on home screen - show grid view
-        Serial.println("*** WORK BUTTON CLICKED ***");
+      } else if (inPreviewCancelButton) {
+        // X button clicked on color preview - return to home without saving
+        Serial.println("*** PREVIEW CANCEL (X) BUTTON CLICKED ***");
+        currentViewMode = 0;
+        displayStoppedState();
+      } else if (inPreviewConfirmButton) {
+        // V button clicked on color preview - save color and return to home
+        Serial.println("*** PREVIEW CONFIRM (V) BUTTON CLICKED ***");
+        selectedWorkColor = tempPreviewColor;
+        saveSelectedColor();  // Save to NVS for persistence
+        Serial.print("-> Saved color: 0x");
+        Serial.println(selectedWorkColor, HEX);
+        currentViewMode = 0;
+        displayStoppedState();
+      } else if (inGearButton) {
+        // Gear button clicked on home screen - show grid view (palette)
+        Serial.println("*** GEAR BUTTON CLICKED ***");
         tempSelectedColorIndex = -1;  // Reset temporary selection
         gridViewActive = true;
+        currentViewMode = 1;  // Grid/palette view
         drawGrid();
-      } else if (inRestButton) {
-        // Rest button clicked on home screen
-        Serial.println("*** REST BUTTON CLICKED ***");
-        // TODO: Add functionality later
       } else if (inModeButton) {
         // Cycle through modes: 1/1 -> 25/5 -> 50/10 -> 1/1
         Serial.println("*** MODE BUTTON CLICKED ***");
@@ -1066,13 +1213,19 @@ void handleTouchInput() {
 
 void updateDisplay() {
   if (currentState == STOPPED) {
-    // If grid view is active, show grid (it's already drawn when activated)
-    // Otherwise, show normal stopped state (splash screen)
-    if (!gridViewActive) {
+    // Check view mode: 0 = home, 1 = grid/palette, 2 = color preview
+    if (currentViewMode == 0 && !gridViewActive) {
       // Normal stopped state is handled by displayStoppedState()
       return;
     }
-    // Grid view is active, no need to update (grid is static for now)
+    if (currentViewMode == 1 || gridViewActive) {
+      // Grid view is active, no need to update (grid is static)
+      return;
+    }
+    if (currentViewMode == 2) {
+      // Color preview is active, no need to update (static)
+      return;
+    }
     return;
   } else {
     // Update display exactly once per second for smooth timer
@@ -1116,6 +1269,9 @@ void drawTimer() {
   int centerY = gfx->height() / 2;
   int radius = 70;
   
+  // Check if we're in landscape mode (rotation 1 or 3)
+  bool isLandscape = (currentRotation == 1 || currentRotation == 3);
+  
   // Get current UI color based on work/rest session
   uint16_t uiColor = getCurrentUIColor();
   
@@ -1127,31 +1283,56 @@ void drawTimer() {
     
     const char *statusTxt = nullptr;
     uint16_t statusColor = uiColor;
-    // Status button text: when running -> "pause", when paused -> "start"
+    bool useIcon = false;  // Use icon for pause/start
+    bool isPauseIcon = false;
+    
+    // Status button: when running -> pause icon, when paused -> play icon
     if (currentState == PAUSED) {
-      statusTxt = "start";
+      useIcon = true;
+      isPauseIcon = false;  // Play icon
     } else if (currentState == RUNNING) {
-      statusTxt = "pause";
+      useIcon = true;
+      isPauseIcon = true;   // Pause icon
     } else if (isWorkSession) {
       statusTxt = "work";
     } else {
       statusTxt = "rest";
     }
-    int16_t statusCenterX = gfx->width() / 2;
-    int16_t statusY = gfx->height() - 30;
-
-    // First compute text bounds to define the button rectangle
+    
+    // Calculate button size
     int16_t x1, y1;
     uint16_t w, h;
-    gfx->setFont(nullptr);
-    gfx->setTextSize(3, 3, 0);
-    gfx->getTextBounds(statusTxt, 0, 0, &x1, &y1, &w, &h);
+    int16_t iconSize = 24;  // Icon size
+    
+    if (useIcon) {
+      w = iconSize + 8;
+      h = iconSize;
+    } else {
+      gfx->setFont(nullptr);
+      gfx->setTextSize(3, 3, 0);
+      gfx->getTextBounds(statusTxt, 0, 0, &x1, &y1, &w, &h);
+    }
 
     int padding = 6;
-    statusBtnLeft   = statusCenterX - (int16_t)w / 2 - padding;
-    statusBtnRight  = statusCenterX + (int16_t)w / 2 + padding;
-    statusBtnTop    = statusY - (int16_t)h - padding;
-    statusBtnBottom = statusY + padding;
+    int16_t statusCenterX, statusCenterY;
+    
+    if (isLandscape) {
+      // Landscape: status button on the right side, vertically centered
+      statusCenterX = gfx->width() - 35;
+      statusCenterY = gfx->height() / 2;
+      statusBtnLeft   = statusCenterX - (int16_t)w / 2 - padding;
+      statusBtnRight  = statusCenterX + (int16_t)w / 2 + padding;
+      statusBtnTop    = statusCenterY - (int16_t)h / 2 - padding;
+      statusBtnBottom = statusCenterY + (int16_t)h / 2 + padding;
+    } else {
+      // Portrait: status button at the bottom center
+      statusCenterX = gfx->width() / 2;
+      statusCenterY = gfx->height() - 30;
+      statusBtnLeft   = statusCenterX - (int16_t)w / 2 - padding;
+      statusBtnRight  = statusCenterX + (int16_t)w / 2 + padding;
+      statusBtnTop    = statusCenterY - (int16_t)h / 2 - padding;
+      statusBtnBottom = statusCenterY + (int16_t)h / 2 + padding;
+    }
 
     // Draw 1-pixel border around button
     gfx->drawRect(statusBtnLeft, statusBtnTop,
@@ -1159,13 +1340,22 @@ void drawTimer() {
                   statusBtnBottom - statusBtnTop,
                   statusColor);
 
-    // Now draw the status text centered inside the button rectangle
+    // Draw icon or text centered inside the button
     int16_t btnCenterY = (statusBtnTop + statusBtnBottom) / 2;
-    drawCenteredText(statusTxt, statusCenterX, btnCenterY, statusColor, 3);
+    int16_t btnCenterX = (statusBtnLeft + statusBtnRight) / 2;
+    if (useIcon) {
+      if (isPauseIcon) {
+        drawPauseIcon(btnCenterX, btnCenterY, iconSize, statusColor);
+      } else {
+        drawPlayIcon(btnCenterX, btnCenterY, iconSize, statusColor);
+      }
+    } else {
+      drawCenteredText(statusTxt, btnCenterX, btnCenterY, statusColor, 3);
+    }
     statusBtnValid = true;
     lastDisplayedState = currentState;  // Initialize state tracking
     
-    // Draw mode button at the top
+    // Draw mode button (left side in landscape, top center in portrait)
     const char *modeTxt = nullptr;
     switch (currentMode) {
       case MODE_1_1:  modeTxt = "1/1"; break;
@@ -1173,21 +1363,32 @@ void drawTimer() {
       case MODE_50_10: modeTxt = "50/10"; break;
       default: modeTxt = "25/5"; break;
     }
-    int16_t modeCenterX = gfx->width() / 2;
-    // Calculate modeY so that top margin equals bottom margin (24px)
-    // statusBtnBottom = height() - 30 + 6 = height() - 24, so bottom margin = 24
-    // modeBtnTop should be 24, so modeY = 24 + h + padding
+    
     gfx->setFont(nullptr);
     gfx->setTextSize(3, 3, 0);
     gfx->getTextBounds(modeTxt, 0, 0, &x1, &y1, &w, &h);
     
     padding = 4;
-    int16_t topMargin = 24;  // Same as bottom margin (height() - 30 + 6 = 24)
-    int16_t modeY = topMargin + (int16_t)h + padding;  // Position so top margin = 24px
-    modeBtnLeft   = modeCenterX - (int16_t)w / 2 - padding;
-    modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
-    modeBtnTop    = topMargin;  // 24px from top
-    modeBtnBottom = modeY + padding;
+    int16_t modeCenterX, modeCenterY;
+    
+    if (isLandscape) {
+      // Landscape: mode button on the left side, vertically centered
+      modeCenterX = 35;
+      modeCenterY = gfx->height() / 2;
+      modeBtnLeft   = modeCenterX - (int16_t)w / 2 - padding;
+      modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
+      modeBtnTop    = modeCenterY - (int16_t)h / 2 - padding;
+      modeBtnBottom = modeCenterY + (int16_t)h / 2 + padding;
+    } else {
+      // Portrait: mode button at the top center
+      int16_t topMargin = 24;
+      modeCenterX = gfx->width() / 2;
+      int16_t modeY = topMargin + (int16_t)h + padding;
+      modeBtnLeft   = modeCenterX - (int16_t)w / 2 - padding;
+      modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
+      modeBtnTop    = topMargin;
+      modeBtnBottom = modeY + padding;
+    }
     
     // Draw 1-pixel border around mode button
     gfx->drawRect(modeBtnLeft, modeBtnTop,
@@ -1197,7 +1398,8 @@ void drawTimer() {
     
     // Draw mode text centered inside the button
     int16_t modeBtnCenterY = (modeBtnTop + modeBtnBottom) / 2;
-    drawCenteredText(modeTxt, modeCenterX, modeBtnCenterY, uiColor, 3);
+    int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
+    drawCenteredText(modeTxt, modeBtnCenterX, modeBtnCenterY, uiColor, 3);
     modeBtnValid = true;
     lastDisplayedMode = currentMode;
     
@@ -1230,13 +1432,18 @@ void drawTimer() {
   
   // Update status text if state changed
   if (currentState != lastDisplayedState) {
-    // Determine new status text and color
+    // Determine new status and color
     const char *statusTxt = nullptr;
     uint16_t statusColor = uiColor;  // Use current UI color (gold for work, blue for rest)
+    bool useIcon = false;
+    bool isPauseIcon = false;
+    
     if (currentState == PAUSED) {
-      statusTxt = "start";
+      useIcon = true;
+      isPauseIcon = false;  // Play icon
     } else if (currentState == RUNNING) {
-      statusTxt = "pause";
+      useIcon = true;
+      isPauseIcon = true;   // Pause icon
     } else if (isWorkSession) {
       statusTxt = "work";
     } else {
@@ -1245,40 +1452,47 @@ void drawTimer() {
     
     // Erase old status by drawing it in black (if we had one)
     if (lastDisplayedState != STOPPED) {
-      const char *oldStatusTxt = nullptr;
-      if (lastDisplayedState == PAUSED) {
-        oldStatusTxt = "start";
-      } else if (lastDisplayedState == RUNNING) {
-        oldStatusTxt = "pause";
-      } else if (isWorkSession) {
-        oldStatusTxt = "work";
-      } else {
-        oldStatusTxt = "rest";
-      }
-      drawCenteredText(oldStatusTxt, gfx->width() / 2, gfx->height() - 30, COLOR_BLACK, 3);
+      // Erase old button area
+      gfx->fillRect(statusBtnLeft, statusBtnTop,
+                    statusBtnRight - statusBtnLeft,
+                    statusBtnBottom - statusBtnTop,
+                    COLOR_BLACK);
     }
     
-    // Draw new status and update button bounds
-    int16_t statusCenterX = gfx->width() / 2;
-    int16_t statusY = gfx->height() - 30;
-
+    // Calculate button size
     int16_t x1, y1;
     uint16_t w, h;
-    gfx->setFont(nullptr);
-    gfx->setTextSize(3, 3, 0);
-    gfx->getTextBounds(statusTxt, 0, 0, &x1, &y1, &w, &h);
+    int16_t iconSize = 24;
+    
+    if (useIcon) {
+      w = iconSize + 8;
+      h = iconSize;
+    } else {
+      gfx->setFont(nullptr);
+      gfx->setTextSize(3, 3, 0);
+      gfx->getTextBounds(statusTxt, 0, 0, &x1, &y1, &w, &h);
+    }
 
     int padding = 6;
-    statusBtnLeft   = statusCenterX - (int16_t)w / 2 - padding;
-    statusBtnRight  = statusCenterX + (int16_t)w / 2 + padding;
-    statusBtnTop    = statusY - (int16_t)h - padding;
-    statusBtnBottom = statusY + padding;
-
-    // Erase old button area completely
-    gfx->fillRect(statusBtnLeft, statusBtnTop,
-                  statusBtnRight - statusBtnLeft,
-                  statusBtnBottom - statusBtnTop,
-                  COLOR_BLACK);
+    int16_t statusCenterX, statusCenterY;
+    
+    if (isLandscape) {
+      // Landscape: status button on the right side
+      statusCenterX = gfx->width() - 35;
+      statusCenterY = gfx->height() / 2;
+      statusBtnLeft   = statusCenterX - (int16_t)w / 2 - padding;
+      statusBtnRight  = statusCenterX + (int16_t)w / 2 + padding;
+      statusBtnTop    = statusCenterY - (int16_t)h / 2 - padding;
+      statusBtnBottom = statusCenterY + (int16_t)h / 2 + padding;
+    } else {
+      // Portrait: status button at the bottom
+      statusCenterX = gfx->width() / 2;
+      statusCenterY = gfx->height() - 30;
+      statusBtnLeft   = statusCenterX - (int16_t)w / 2 - padding;
+      statusBtnRight  = statusCenterX + (int16_t)w / 2 + padding;
+      statusBtnTop    = statusCenterY - (int16_t)h / 2 - padding;
+      statusBtnBottom = statusCenterY + (int16_t)h / 2 + padding;
+    }
 
     // Draw new border
     gfx->drawRect(statusBtnLeft, statusBtnTop,
@@ -1286,9 +1500,18 @@ void drawTimer() {
                   statusBtnBottom - statusBtnTop,
                   statusColor);
 
-    // Draw text centered inside the button (по вертикали середина кнопки)
+    // Draw icon or text centered inside the button
     int16_t btnCenterY = (statusBtnTop + statusBtnBottom) / 2;
-    drawCenteredText(statusTxt, statusCenterX, btnCenterY, statusColor, 3);
+    int16_t btnCenterX = (statusBtnLeft + statusBtnRight) / 2;
+    if (useIcon) {
+      if (isPauseIcon) {
+        drawPauseIcon(btnCenterX, btnCenterY, iconSize, statusColor);
+      } else {
+        drawPlayIcon(btnCenterX, btnCenterY, iconSize, statusColor);
+      }
+    } else {
+      drawCenteredText(statusTxt, btnCenterX, btnCenterY, statusColor, 3);
+    }
     statusBtnValid = true;
     lastDisplayedState = currentState;
   }
@@ -1304,22 +1527,13 @@ void drawTimer() {
     }
     
     // Erase old mode button if it existed
-    if (modeBtnValid && lastDisplayedMode != MODE_25_5) {
-      const char *oldModeTxt = nullptr;
-      switch (lastDisplayedMode) {
-        case MODE_1_1:  oldModeTxt = "1/1"; break;
-        case MODE_25_5: oldModeTxt = "25/5"; break;
-        case MODE_50_10: oldModeTxt = "50/10"; break;
-        default: oldModeTxt = "25/5"; break;
-      }
+    if (modeBtnValid) {
       gfx->fillRect(modeBtnLeft, modeBtnTop,
                     modeBtnRight - modeBtnLeft,
                     modeBtnBottom - modeBtnTop,
                     COLOR_BLACK);
     }
     
-    int16_t modeCenterX = gfx->width() / 2;
-    // Calculate modeY so that top margin equals bottom margin (24px)
     int16_t x1, y1;
     uint16_t w, h;
     gfx->setFont(nullptr);
@@ -1327,18 +1541,26 @@ void drawTimer() {
     gfx->getTextBounds(modeTxt, 0, 0, &x1, &y1, &w, &h);
     
     int padding = 4;
-    int16_t topMargin = 24;  // Same as bottom margin (height() - 30 + 6 = 24)
-    int16_t modeY = topMargin + (int16_t)h + padding;  // Position so top margin = 24px
-    modeBtnLeft   = modeCenterX - (int16_t)w / 2 - padding;
-    modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
-    modeBtnTop    = topMargin;  // 24px from top
-    modeBtnBottom = modeY + padding;
+    int16_t modeCenterX, modeCenterY;
     
-    // Erase old button area
-    gfx->fillRect(modeBtnLeft, modeBtnTop,
-                  modeBtnRight - modeBtnLeft,
-                  modeBtnBottom - modeBtnTop,
-                  COLOR_BLACK);
+    if (isLandscape) {
+      // Landscape: mode button on the left side
+      modeCenterX = 35;
+      modeCenterY = gfx->height() / 2;
+      modeBtnLeft   = modeCenterX - (int16_t)w / 2 - padding;
+      modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
+      modeBtnTop    = modeCenterY - (int16_t)h / 2 - padding;
+      modeBtnBottom = modeCenterY + (int16_t)h / 2 + padding;
+    } else {
+      // Portrait: mode button at the top center
+      int16_t topMargin = 24;
+      modeCenterX = gfx->width() / 2;
+      int16_t modeY = topMargin + (int16_t)h + padding;
+      modeBtnLeft   = modeCenterX - (int16_t)w / 2 - padding;
+      modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
+      modeBtnTop    = topMargin;
+      modeBtnBottom = modeY + padding;
+    }
     
     // Draw new border
     gfx->drawRect(modeBtnLeft, modeBtnTop,
@@ -1348,17 +1570,28 @@ void drawTimer() {
     
     // Draw text
     int16_t modeBtnCenterY = (modeBtnTop + modeBtnBottom) / 2;
-    drawCenteredText(modeTxt, modeCenterX, modeBtnCenterY, uiColor, 3);
+    int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
+    drawCenteredText(modeTxt, modeBtnCenterX, modeBtnCenterY, uiColor, 3);
     modeBtnValid = true;
     lastDisplayedMode = currentMode;
   }
 }
+
+// Flag to force progress circle redraw (set on rotation change)
+static bool forceCircleRedraw = false;
 
 void drawProgressCircle(float progress, int centerX, int centerY, int radius, uint16_t color) {
   static float lastProgress = -1.0f;
   static bool circleDrawn = false;
   static uint16_t lastColor = COLOR_GOLD;
   int borderWidth = 5;
+  
+  // Force redraw on rotation change
+  if (forceCircleRedraw) {
+    circleDrawn = false;
+    lastProgress = -1.0f;
+    forceCircleRedraw = false;
+  }
   
   // Redraw full circle if color changed (work <-> rest transition)
   if (lastColor != color) {
@@ -1461,6 +1694,7 @@ void applyRotation(uint8_t newRotation) {
   
   // Force full display refresh
   displayInitialized = false;
+  forceCircleRedraw = true;  // Reset progress circle state
   memset(lastTimeStr, 0, sizeof(lastTimeStr));
   
   // Redraw current screen
