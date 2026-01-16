@@ -2038,110 +2038,48 @@ void drawTimer() {
     lastDisplayedState = currentState;  // Initialize state tracking
     
     // Draw mode button (left side in landscape, top center in portrait)
-    const char *modeTxt = nullptr;
-    const char *modeLine1 = nullptr;
-    const char *modeLine2 = nullptr;
-    const char *modeLine3 = nullptr;
-    
-    switch (currentMode) {
-      case MODE_1_1:
-        modeTxt = "1/1";
-        modeLine1 = "1";
-        modeLine2 = "/";
-        modeLine3 = "1";
-        break;
-      case MODE_25_5:
-        modeTxt = "25/5";
-        modeLine1 = "25";
-        modeLine2 = "/";
-        modeLine3 = "5";
-        break;
-      case MODE_50_10:
-        modeTxt = "50/10";
-        modeLine1 = "50";
-        modeLine2 = "/";
-        modeLine3 = "10";
-        break;
-      default:
-        modeTxt = "25/5";
-        modeLine1 = "25";
-        modeLine2 = "/";
-        modeLine3 = "5";
-        break;
-    }
+    // Single "M" button for mode selection - same size as pause/resume button
+    const char *modeTxt = "M";
     
     gfx->setFont(nullptr);
-    gfx->setTextSize(3, 3, 0);
+    gfx->setTextSize(3, 3, 0);  // Same text size as status button
     
-    padding = 4;
+    // Use same size as status button (iconSize = 24, padding = 6)
+    int16_t modeIconSize = 24;  // Same as status button icon size
+    int16_t modeW = modeIconSize + 8;  // Same width calculation as status button (32)
+    int16_t modeH = modeIconSize;  // Same height as status button (24)
+    padding = 6;  // Same padding as status button
     int16_t modeCenterX, modeCenterY;
     
     if (isLandscape) {
       // Landscape: mode button on the left side, vertically centered
-      // Display mode as multi-line: number, /, number (each on new line)
-      int16_t x1_line1, y1_line1, x1_line2, y1_line2, x1_line3, y1_line3;
-      uint16_t w1, h1, w2, h2, w3, h3;
-      
-      // Get bounds for each line
-      gfx->getTextBounds(modeLine1, 0, 0, &x1_line1, &y1_line1, &w1, &h1);
-      gfx->getTextBounds(modeLine2, 0, 0, &x1_line2, &y1_line2, &w2, &h2);
-      gfx->getTextBounds(modeLine3, 0, 0, &x1_line3, &y1_line3, &w3, &h3);
-      
-      // Calculate button size based on multi-line text
-      uint16_t maxW = (w1 > w2) ? ((w1 > w3) ? w1 : w3) : ((w2 > w3) ? w2 : w3);
-      uint16_t totalH = h1 + h2 + h3 + 4;  // 4px spacing between lines
-      int16_t extraBottomPadding = 24;  // Extra padding at bottom to make rectangle even longer
-      
       modeCenterX = 35;
       modeCenterY = gfx->height() / 2;
-      modeBtnLeft   = modeCenterX - (int16_t)maxW / 2 - padding;
-      modeBtnRight  = modeCenterX + (int16_t)maxW / 2 + padding;
-      modeBtnTop    = modeCenterY - (int16_t)totalH / 2 - padding;
-      modeBtnBottom = modeCenterY + (int16_t)totalH / 2 + padding + extraBottomPadding;
-      
-      // Draw 1-pixel border around mode button
-      gfx->drawRect(modeBtnLeft, modeBtnTop,
-                    modeBtnRight - modeBtnLeft,
-                    modeBtnBottom - modeBtnTop,
-                    uiColor);
-      
-      // Draw multi-line text centered inside the button
-      int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
-      int16_t lineSpacing = 2;
-      int16_t startY = modeBtnTop + padding + h1 / 2 - y1_line1;
-      
-      // Line 1 (number)
-      drawCenteredText(modeLine1, modeBtnCenterX, startY, uiColor, 3);
-      
-      // Line 2 (/)
-      int16_t line2Y = startY + h1 + lineSpacing + h2 / 2 - y1_line2;
-      drawCenteredText(modeLine2, modeBtnCenterX, line2Y, uiColor, 3);
-      
-      // Line 3 (number)
-      int16_t line3Y = line2Y + h2 + lineSpacing + h3 / 2 - y1_line3;
-      drawCenteredText(modeLine3, modeBtnCenterX, line3Y, uiColor, 3);
+      modeBtnLeft   = modeCenterX - (int16_t)modeW / 2 - padding;
+      modeBtnRight  = modeCenterX + (int16_t)modeW / 2 + padding;
+      modeBtnTop    = modeCenterY - (int16_t)modeH / 2 - padding;
+      modeBtnBottom = modeCenterY + (int16_t)modeH / 2 + padding;
     } else {
-      // Portrait: mode button at the top center (single line)
-      gfx->getTextBounds(modeTxt, 0, 0, &x1, &y1, &w, &h);
+      // Portrait: mode button at the top center
       int16_t topMargin = 24;
       modeCenterX = gfx->width() / 2;
-      int16_t modeY = topMargin + (int16_t)h + padding;
-      modeBtnLeft   = modeCenterX - (int16_t)w / 2 - padding;
-      modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
+      modeCenterY = topMargin + (int16_t)modeH / 2 + padding;
+      modeBtnLeft   = modeCenterX - (int16_t)modeW / 2 - padding;
+      modeBtnRight  = modeCenterX + (int16_t)modeW / 2 + padding;
       modeBtnTop    = topMargin;
-      modeBtnBottom = modeY + padding;
-      
-      // Draw 1-pixel border around mode button
-      gfx->drawRect(modeBtnLeft, modeBtnTop,
-                    modeBtnRight - modeBtnLeft,
-                    modeBtnBottom - modeBtnTop,
-                    uiColor);
-      
-      // Draw mode text centered inside the button
-      int16_t modeBtnCenterY = (modeBtnTop + modeBtnBottom) / 2;
-      int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
-      drawCenteredText(modeTxt, modeBtnCenterX, modeBtnCenterY, uiColor, 3);
+      modeBtnBottom = modeCenterY + (int16_t)modeH / 2 + padding;
     }
+    
+    // Draw 1-pixel border around mode button
+    gfx->drawRect(modeBtnLeft, modeBtnTop,
+                  modeBtnRight - modeBtnLeft,
+                  modeBtnBottom - modeBtnTop,
+                  uiColor);
+    
+    // Draw "M" text centered inside the button
+    int16_t modeBtnCenterY = (modeBtnTop + modeBtnBottom) / 2;
+    int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
+    drawCenteredText(modeTxt, modeBtnCenterX, modeBtnCenterY, uiColor, 3);
     
     modeBtnValid = true;
     lastDisplayedMode = currentMode;
@@ -2259,40 +2197,8 @@ void drawTimer() {
     lastDisplayedState = currentState;
   }
   
-  // Update mode button if mode changed
+  // Update mode button if mode changed (always show "M" now, but still track mode changes for redraw)
   if (currentMode != lastDisplayedMode) {
-    const char *modeTxt = nullptr;
-    const char *modeLine1 = nullptr;
-    const char *modeLine2 = nullptr;
-    const char *modeLine3 = nullptr;
-    
-    switch (currentMode) {
-      case MODE_1_1:
-        modeTxt = "1/1";
-        modeLine1 = "1";
-        modeLine2 = "/";
-        modeLine3 = "1";
-        break;
-      case MODE_25_5:
-        modeTxt = "25/5";
-        modeLine1 = "25";
-        modeLine2 = "/";
-        modeLine3 = "5";
-        break;
-      case MODE_50_10:
-        modeTxt = "50/10";
-        modeLine1 = "50";
-        modeLine2 = "/";
-        modeLine3 = "10";
-        break;
-      default:
-        modeTxt = "25/5";
-        modeLine1 = "25";
-        modeLine2 = "/";
-        modeLine3 = "5";
-        break;
-    }
-    
     // Erase old mode button if it existed
     if (modeBtnValid) {
       gfx->fillRect(modeBtnLeft, modeBtnTop,
@@ -2301,79 +2207,48 @@ void drawTimer() {
                     COLOR_BLACK);
     }
     
-    int16_t x1, y1;
-    uint16_t w, h;
-    gfx->setFont(nullptr);
-    gfx->setTextSize(3, 3, 0);
+    // Draw "M" button (same as initial draw) - same size as pause/resume button
+    const char *modeTxt = "M";
     
-    int padding = 4;
+    gfx->setFont(nullptr);
+    gfx->setTextSize(3, 3, 0);  // Same text size as status button
+    
+    // Use same size as status button (iconSize = 24, padding = 6)
+    int16_t modeIconSize = 24;  // Same as status button icon size
+    int16_t modeW = modeIconSize + 8;  // Same width calculation as status button (32)
+    int16_t modeH = modeIconSize;  // Same height as status button (24)
+    int padding = 6;  // Same padding as status button
     int16_t modeCenterX, modeCenterY;
     
     if (isLandscape) {
-      // Landscape: mode button on the left side, multi-line display
-      int16_t x1_line1, y1_line1, x1_line2, y1_line2, x1_line3, y1_line3;
-      uint16_t w1, h1, w2, h2, w3, h3;
-      
-      // Get bounds for each line
-      gfx->getTextBounds(modeLine1, 0, 0, &x1_line1, &y1_line1, &w1, &h1);
-      gfx->getTextBounds(modeLine2, 0, 0, &x1_line2, &y1_line2, &w2, &h2);
-      gfx->getTextBounds(modeLine3, 0, 0, &x1_line3, &y1_line3, &w3, &h3);
-      
-      // Calculate button size based on multi-line text
-      uint16_t maxW = (w1 > w2) ? ((w1 > w3) ? w1 : w3) : ((w2 > w3) ? w2 : w3);
-      uint16_t totalH = h1 + h2 + h3 + 4;  // 4px spacing between lines
-      int16_t extraBottomPadding = 24;  // Extra padding at bottom to make rectangle even longer
-      
+      // Landscape: mode button on the left side, vertically centered
       modeCenterX = 35;
       modeCenterY = gfx->height() / 2;
-      modeBtnLeft   = modeCenterX - (int16_t)maxW / 2 - padding;
-      modeBtnRight  = modeCenterX + (int16_t)maxW / 2 + padding;
-      modeBtnTop    = modeCenterY - (int16_t)totalH / 2 - padding;
-      modeBtnBottom = modeCenterY + (int16_t)totalH / 2 + padding + extraBottomPadding;
-      
-      // Draw new border
-      gfx->drawRect(modeBtnLeft, modeBtnTop,
-                    modeBtnRight - modeBtnLeft,
-                    modeBtnBottom - modeBtnTop,
-                    uiColor);
-      
-      // Draw multi-line text centered inside the button
-      int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
-      int16_t lineSpacing = 2;
-      int16_t startY = modeBtnTop + padding + h1 / 2 - y1_line1;
-      
-      // Line 1 (number)
-      drawCenteredText(modeLine1, modeBtnCenterX, startY, uiColor, 3);
-      
-      // Line 2 (/)
-      int16_t line2Y = startY + h1 + lineSpacing + h2 / 2 - y1_line2;
-      drawCenteredText(modeLine2, modeBtnCenterX, line2Y, uiColor, 3);
-      
-      // Line 3 (number)
-      int16_t line3Y = line2Y + h2 + lineSpacing + h3 / 2 - y1_line3;
-      drawCenteredText(modeLine3, modeBtnCenterX, line3Y, uiColor, 3);
+      modeBtnLeft   = modeCenterX - (int16_t)modeW / 2 - padding;
+      modeBtnRight  = modeCenterX + (int16_t)modeW / 2 + padding;
+      modeBtnTop    = modeCenterY - (int16_t)modeH / 2 - padding;
+      modeBtnBottom = modeCenterY + (int16_t)modeH / 2 + padding;
     } else {
-      // Portrait: mode button at the top center (single line)
-      gfx->getTextBounds(modeTxt, 0, 0, &x1, &y1, &w, &h);
+      // Portrait: mode button at the top center
       int16_t topMargin = 24;
       modeCenterX = gfx->width() / 2;
-      int16_t modeY = topMargin + (int16_t)h + padding;
-      modeBtnLeft   = modeCenterX - (int16_t)w / 2 - padding;
-      modeBtnRight  = modeCenterX + (int16_t)w / 2 + padding;
+      modeCenterY = topMargin + (int16_t)modeH / 2 + padding;
+      modeBtnLeft   = modeCenterX - (int16_t)modeW / 2 - padding;
+      modeBtnRight  = modeCenterX + (int16_t)modeW / 2 + padding;
       modeBtnTop    = topMargin;
-      modeBtnBottom = modeY + padding;
-      
-      // Draw new border
-      gfx->drawRect(modeBtnLeft, modeBtnTop,
-                    modeBtnRight - modeBtnLeft,
-                    modeBtnBottom - modeBtnTop,
-                    uiColor);
-      
-      // Draw text
-      int16_t modeBtnCenterY = (modeBtnTop + modeBtnBottom) / 2;
-      int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
-      drawCenteredText(modeTxt, modeBtnCenterX, modeBtnCenterY, uiColor, 3);
+      modeBtnBottom = modeCenterY + (int16_t)modeH / 2 + padding;
     }
+    
+    // Draw new border
+    gfx->drawRect(modeBtnLeft, modeBtnTop,
+                  modeBtnRight - modeBtnLeft,
+                  modeBtnBottom - modeBtnTop,
+                  uiColor);
+    
+    // Draw "M" text centered inside the button
+    int16_t modeBtnCenterY = (modeBtnTop + modeBtnBottom) / 2;
+    int16_t modeBtnCenterX = (modeBtnLeft + modeBtnRight) / 2;
+    drawCenteredText(modeTxt, modeBtnCenterX, modeBtnCenterY, uiColor, 3);
     
     modeBtnValid = true;
     lastDisplayedMode = currentMode;
