@@ -397,6 +397,11 @@ static int16_t previewRestSwatchRight = 0;
 static int16_t previewRestSwatchTop = 0;
 static int16_t previewRestSwatchBottom = 0;
 static bool previewRestSwatchValid = false;
+static int16_t previewWorkSwatchLeft = 0;
+static int16_t previewWorkSwatchRight = 0;
+static int16_t previewWorkSwatchTop = 0;
+static int16_t previewWorkSwatchBottom = 0;
+static bool previewWorkSwatchValid = false;
 
 // Gear button bounds (settings button on home screen)
 static int16_t gearBtnLeft = 0;
@@ -1157,10 +1162,15 @@ void drawColorPreview() {
     int16_t workX = centerX - 60;
     int16_t restX = centerX + 60;
     
-    // Draw "WORK" label and color swatch on left
+    // Draw "WORK" label and color swatch on left (clickable)
     drawCenteredText("WORK", workX, centerY - 40, workColor, 2);
-    gfx->fillRect(workX - swatchWidth/2, centerY - swatchHeight/2, swatchWidth, swatchHeight, workColor);
-    gfx->drawRect(workX - swatchWidth/2, centerY - swatchHeight/2, swatchWidth, swatchHeight, COLOR_WHITE);
+    previewWorkSwatchLeft = workX - swatchWidth/2;
+    previewWorkSwatchRight = workX + swatchWidth/2;
+    previewWorkSwatchTop = centerY - swatchHeight/2;
+    previewWorkSwatchBottom = centerY + swatchHeight/2;
+    gfx->fillRect(previewWorkSwatchLeft, previewWorkSwatchTop, swatchWidth, swatchHeight, workColor);
+    gfx->drawRect(previewWorkSwatchLeft, previewWorkSwatchTop, swatchWidth, swatchHeight, COLOR_WHITE);
+    previewWorkSwatchValid = true;
     
     // Draw "REST" label and color swatch on right (clickable)
     drawCenteredText("REST", restX, centerY - 40, restColor, 2);
@@ -1176,10 +1186,15 @@ void drawColorPreview() {
     int16_t workY = centerY - 60;
     int16_t restY = centerY + 60;
     
-    // Draw "WORK" label and color swatch at top
+    // Draw "WORK" label and color swatch at top (clickable)
     drawCenteredText("WORK", centerX, workY - 30, workColor, 2);
-    gfx->fillRect(centerX - swatchWidth/2, workY - swatchHeight/2, swatchWidth, swatchHeight, workColor);
-    gfx->drawRect(centerX - swatchWidth/2, workY - swatchHeight/2, swatchWidth, swatchHeight, COLOR_WHITE);
+    previewWorkSwatchLeft = centerX - swatchWidth/2;
+    previewWorkSwatchRight = centerX + swatchWidth/2;
+    previewWorkSwatchTop = workY - swatchHeight/2;
+    previewWorkSwatchBottom = workY + swatchHeight/2;
+    gfx->fillRect(previewWorkSwatchLeft, previewWorkSwatchTop, swatchWidth, swatchHeight, workColor);
+    gfx->drawRect(previewWorkSwatchLeft, previewWorkSwatchTop, swatchWidth, swatchHeight, COLOR_WHITE);
+    previewWorkSwatchValid = true;
     
     // Draw "REST" label and color swatch at bottom (clickable)
     drawCenteredText("REST", centerX, restY - 30, restColor, 2);
@@ -1552,6 +1567,12 @@ void handleTouchInput() {
       bool inGridConfirmButton = false;
       int8_t tappedColorIndex = -1;  // Color cell tapped in grid (-1 = none)
       
+      // Check for color preview buttons - declare here so they're visible in the entire if block
+      bool inPreviewCancelButton = false;
+      bool inPreviewConfirmButton = false;
+      bool inPreviewRestSwatch = false;
+      bool inPreviewWorkSwatch = false;
+      
       if (gridViewActive && lastTouchValid && tx >= 0 && ty >= 0) {
         // Check if we're in landscape mode for proper touch detection
         bool isLandscape = (currentRotation == 1 || currentRotation == 3);
@@ -1607,9 +1628,6 @@ void handleTouchInput() {
       }
       
       // Check for color preview buttons - with extra touch padding
-      bool inPreviewCancelButton = false;
-      bool inPreviewConfirmButton = false;
-      bool inPreviewRestSwatch = false;
       if (currentViewMode == 2 && lastTouchValid && tx >= 0 && ty >= 0) {
         if (previewCancelBtnValid) {
           if (tx >= previewCancelBtnLeft - TOUCH_PADDING && tx <= previewCancelBtnRight + TOUCH_PADDING &&
@@ -1621,6 +1639,13 @@ void handleTouchInput() {
           if (tx >= previewConfirmBtnLeft - TOUCH_PADDING && tx <= previewConfirmBtnRight + TOUCH_PADDING &&
               ty >= previewConfirmBtnTop - TOUCH_PADDING && ty <= previewConfirmBtnBottom + TOUCH_PADDING) {
             inPreviewConfirmButton = true;
+          }
+        }
+        // Check work color swatch - with extra touch padding
+        if (previewWorkSwatchValid) {
+          if (tx >= previewWorkSwatchLeft - TOUCH_PADDING && tx <= previewWorkSwatchRight + TOUCH_PADDING &&
+              ty >= previewWorkSwatchTop - TOUCH_PADDING && ty <= previewWorkSwatchBottom + TOUCH_PADDING) {
+            inPreviewWorkSwatch = true;
           }
         }
         // Check for rest color swatch click
@@ -1735,6 +1760,14 @@ void handleTouchInput() {
         tempPreviewRestColor = 0;
         currentViewMode = 0;
         displayStoppedState();
+      } else if (inPreviewWorkSwatch) {
+        // Work color swatch clicked - open color picker for work color
+        Serial.println("*** WORK COLOR SWATCH CLICKED ***");
+        selectingRestColor = false;  // Selecting work color
+        tempSelectedColorIndex = -1;  // Reset temporary selection
+        gridViewActive = true;
+        currentViewMode = 1;  // Grid/palette view
+        drawGrid();
       } else if (inPreviewRestSwatch) {
         // Rest color swatch clicked - open color picker for rest color
         Serial.println("*** REST COLOR SWATCH CLICKED ***");
@@ -1766,15 +1799,14 @@ void handleTouchInput() {
         currentViewMode = 0;
         displayStoppedState();
       } else if (inGearButton) {
-        // Gear button clicked on home screen - show grid view (palette)
+        // Gear button clicked on home screen - show theme color demo screen (color preview)
         Serial.println("*** GEAR BUTTON CLICKED ***");
         selectingRestColor = false;  // Start with work color selection
         tempSelectedColorIndex = -1;  // Reset temporary selection
         tempPreviewColor = selectedWorkColor;  // Initialize preview with current work color
         tempPreviewRestColor = (selectedRestColor != 0) ? selectedRestColor : 0;  // Initialize preview with current rest color
-        gridViewActive = true;
-        currentViewMode = 1;  // Grid/palette view
-        drawGrid();
+        currentViewMode = 2;  // Color preview/demo screen
+        drawColorPreview();
       } else if (inModeButton) {
         // Cycle through modes: 1/1 -> 25/5 -> 50/10 -> 1/1
         Serial.println("*** MODE BUTTON CLICKED ***");
